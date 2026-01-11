@@ -1,0 +1,95 @@
+===============================================
+  HƯỚNG DẪN NHANH - SETUP LẠI DỰ ÁN
+===============================================
+
+📍 Repository GitHub:
+https://github.com/hoangnguyenhtng/FederatedLearning.git
+
+===============================================
+BƯỚC 1: CÀI ĐẶT PYTHON & GIT
+===============================================
+
+1. Python 3.9+: https://www.python.org/downloads/
+   ⚠️ NHỚ TICK: "Add Python to PATH"
+
+2. Git: https://git-scm.com/download/win
+
+===============================================
+BƯỚC 2: CLONE & SETUP (5 lệnh)
+===============================================
+
+Mở PowerShell và chạy:
+
+cd D:\
+git clone https://github.com/hoangnguyenhtng/FederatedLearning.git
+cd FederatedLearning
+python -m venv fed_rec_env
+.\fed_rec_env\Scripts\Activate.ps1
+
+⚠️ Nếu lỗi execution policy, chạy:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+===============================================
+BƯỚC 3: CÀI ĐẶT THƯ VIỆN
+===============================================
+
+pip install --upgrade pip
+pip install -r requirements.txt
+
+⏱️ Mất ~10-15 phút
+
+===============================================
+BƯỚC 4: TẢI & XỬ LÝ DỮ LIỆU
+===============================================
+
+PowerShell -ExecutionPolicy Bypass -File download_amazon_data.ps1
+python src\data_generation\process_amazon_data.py
+
+⏱️ Mất ~1-2 giờ
+
+===============================================
+BƯỚC 5: CHẠY TRAINING
+===============================================
+
+python src\training\federated_training_pipeline.py
+
+⏱️ Mất ~30-45 phút
+
+===============================================
+✅ HOÀN THÀNH!
+===============================================
+
+📖 Xem hướng dẫn chi tiết:
+HUONG_DAN_CAI_DAT_LAI.md
+
+📊 Kết quả mong đợi:
+- Accuracy: 60-70%
+- Loss: ~0.5
+- Model lưu tại: experiments/
+
+===============================================
+⏱️ TỔNG THỜI GIAN: ~3 giờ
+===============================================
+
+💡 Tips:
+- Luôn chạy lệnh từ thư mục gốc dự án
+- Nhớ activate môi trường ảo trước khi chạy
+- Không push folder: fed_rec_env/, data/, experiments/
+
+🎯 Khi gặp lỗi:
+- Đọc kỹ error message
+- Xem phần "XỬ LÝ LỖI" trong HUONG_DAN_CAI_DAT_LAI.md
+- Kiểm tra Python đã có trong PATH chưa
+
+===============================================
+📞 TÀI LIỆU THAM KHẢO
+===============================================
+
+- HUONG_DAN_CAI_DAT_LAI.md (Chi tiết nhất)
+- QUICK_START.md (Chạy nhanh)
+- README.md (Tổng quan dự án)
+
+===============================================
+Tạo: 12/01/2026
+Status: ✅ Ready
+===============================================
