@@ -1,0 +1,202 @@
+# Federated Learning Configuration
+federated:
+  num_clients: 10
+  num_rounds: 100                # Increased from 50 (more training for better convergence)
+  
+  # Client selection
+  # Increased for better stability and evaluation accuracy
+  fraction_fit: 0.6              # 60% clients per round (6/10) - increased from 0.4
+  fraction_evaluate: 1.0         # 100% for evaluation (ALL 10) - CRITICAL for stable metrics!
+  min_fit_clients: 6             # Minimum clients for training - increased from 2
+  min_evaluate_clients: 10       # Evaluate ALL clients - increased from 2
+  
+  # FedPer specific
+  shared_layers: 3               # Number of shared layers
+  personal_layers: 2             # Number of personal layers
+  
+  # Aggregation
+  aggregation_method: "fedavg"   # fedavg, fedprox, fedadam
+  
+  # FedProx specific
+  mu: 0.01                       # Proximal term coefficient
+
+
+# ============================================================================
+# EXPERIMENT SETTINGS
+# ============================================================================
+experiment:
+  name: "fedper_multimodal_v1"
+  description: "Federated learning with FedPer architecture"
+  seed: 42
+
+# Model Architecture
+model:
+  # Multi-modal encoder dimensions
+  text_embedding_dim: 384        # Sentence-Transformers output
+  image_embedding_dim: 2048      # ResNet-50 output
+  behavior_embedding_dim: 32     # Behavior features
+  hidden_dim: 256                # Final unified embedding
+  
+  # FedPerRecommender layer configurations
+  shared_hidden_dims: [512, 256, 128]    # Shared base layers
+  personal_hidden_dims: [64, 32]         # Personal head layers
+  
+  # Output configuration
+  # Rating prediction: 5 classes (ratings 1-5, mapped to 0-4)
+  num_classes: 5                 # Number of rating classes (1-5 → 0-4)
+  dropout: 0.2
+  
+  # Fusion module
+  fusion:
+    type: "adaptive"             # adaptive, attention, or concat
+    learn_weights: true
+
+
+# Data Processing
+data:
+  # Dataset sizes
+  num_users: 1000
+  num_items: 10000
+  num_interactions: 50000
+  
+  # Interaction types
+  interaction_types: ["view", "click", "like", "purchase", "rate"]
+  
+  # Non-IID distribution
+  non_iid:
+    strategy: "dirichlet"        # dirichlet or clustering
+    alpha: 0.5                   # Lower = more non-IID (0.1-10.0)
+  
+  # Preference types distribution
+  preference_distribution:
+    text_heavy: 0.30             # 30% users prefer text
+    image_heavy: 0.30            # 30% users prefer images
+    behavior_heavy: 0.20         # 20% users prefer popularity
+    balanced: 0.20               # 20% users balanced
+  
+  # Train/Val split
+  train_ratio: 0.8
+  val_ratio: 0.2
+
+# ============================================================================
+# PRIVACY CONFIGURATION (Optional)
+# ============================================================================
+privacy:
+  differential_privacy: false
+  noise_multiplier: 1.1          # Noise scale for DP-SGD
+  max_grad_norm: 1.0             # Gradient clipping
+  epsilon: 5.0                   # Privacy budget
+  delta: 1e-5                    # Privacy parameter
+
+# Vector Database (Milvus)
+vector_db:
+  host: "localhost"
+  port: 19530
+  collection_name: "item_embeddings"
+  dimension: 384
+  index_type: "IVF_FLAT"
+  metric_type: "COSINE"
+
+training:
+  # Optimization
+  # Reduced batch size for Windows stability (avoid Ray memory issues)
+  batch_size: 32                 # Increased back to 32 (more stable with gradient clipping)
+  local_epochs: 5                # Increased from 3 (more local learning per round)
+  learning_rate: 0.0001          # Restored to 0.0001 (gradient clipping prevents NaN)
+  optimizer: "adam"
+  weight_decay: 1e-4             # Increased from 1e-5 (more regularization)
+  gradient_clip: 1.0             # Clip gradients to prevent NaN
+  
+  # Learning rate schedule
+  lr_scheduler:
+    type: "step"                 # step, cosine, or none
+    step_size: 10
+    gamma: 0.5
+  
+  # Early stopping
+  early_stopping:
+    patience: 10
+    min_delta: 0.001
+  
+  # DataLoader
+  num_workers: 0                 # Set to 0 for Windows
+  pin_memory: false
+
+# Evaluation
+evaluation:
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "ndcg@10"
+    - "map@10"
+    - "hit_rate@10"
+  
+  top_k: [5, 10, 20]
+
+# ============================================================================
+# API CONFIGURATION (for BƯỚC 11)
+# ============================================================================
+api:
+  host: "0.0.0.0"
+  port: 8000
+  debug: true
+  reload: true
+
+# Paths
+paths:
+  data_dir: "./data"
+  data_raw: "./data/raw"
+  data_processed: "./data/processed"
+  models_dir: "models"
+  experiments_dir: "experiments"
+  logs_dir: "logs"
+
+milvus:
+  host: "localhost"
+  port: "19530"
+  collection_name: "item_embeddings"
+  
+  # Index configuration
+  index_type: "HNSW"             # HNSW, IVF_FLAT, IVF_SQ8
+  metric_type: "L2"              # L2, IP, COSINE
+  
+  # HNSW parameters
+  hnsw_m: 16                     # Number of connections
+  hnsw_ef_construction: 256      # Build time quality
+  hnsw_ef: 128                   # Search time quality
+  
+  # IVF parameters (if using IVF)
+  nlist: 128                     # Number of clusters
+  nprobe: 16                     # Clusters to search
+
+
+data_processing:
+  # Text processing
+  text:
+    model_name: "sentence-transformers/all-MiniLM-L6-v2"  # 384-dim
+    batch_size: 32
+    max_length: 128
+  
+  # Image processing
+  image:
+    model_name: "resnet50"  # ResNet-50 pretrained on ImageNet
+    batch_size: 32
+    image_size: 224
+  
+  # Behavior processing
+  behavior:
+    features:
+      - "click_count"
+      - "purchase_count"
+      - "view_duration"
+      - "rating"
+    normalization: "minmax"  # or "standard"
+# ============================================================================
+# DASHBOARD CONFIGURATION (for BƯỚC 11)
+# ============================================================================
+dashboard:
+  port: 8501
+  theme: "dark"
+  max_recommendations: 20

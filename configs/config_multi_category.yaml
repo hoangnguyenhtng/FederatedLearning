@@ -1,0 +1,218 @@
+# ================================================================
+# MULTI-CATEGORY CONFIG FOR THESIS
+# 4 Categories: Beauty + Games + Fashion + Baby
+# Total: 2.67 MILLION reviews
+# ================================================================
+
+# Categories to use
+categories:
+  - "All_Beauty"           # 371k reviews - image-heavy
+  - "Video_Games"          # 497k reviews - text-heavy
+  - "Amazon_Fashion"       # 883k reviews - style descriptions
+  - "Baby_Products"        # 915k reviews - safety/quality focus
+
+# Data paths
+paths:
+  data_dir: "data"
+  data_raw: "data/raw/amazon_2023"
+  data_processed: "data/processed/multi_category"
+  output_dir: "experiments"
+  log_dir: "logs"
+
+# Model architecture
+model:
+  # Input dimensions
+  text_embedding_dim: 384      # SentenceTransformer output
+  image_embedding_dim: 2048    # ResNet-50 output
+  behavior_dim: 32             # Behavior features
+  
+  # Shared base (larger for multi-domain)
+  shared_hidden_dims: [512, 256, 128]
+  
+  # Personal head (domain-specific)
+  personal_hidden_dim: 64
+  num_classes: 5               # 5-star rating
+  
+  # Regularization
+  dropout: 0.3                 # Higher for multi-domain generalization
+  
+  # Multi-modal encoder
+  multimodal_hidden_dim: 256
+  multimodal_output_dim: 384
+
+# Training configuration
+training:
+  # Batch & epochs
+  batch_size: 32               # Stable with gradient clipping
+  local_epochs: 5              # More local learning
+  
+  # Optimization
+  learning_rate: 0.0001        # Standard rate (safe with clipping)
+  optimizer: "adam"
+  weight_decay: 1e-4           # Regularization for generalization
+  gradient_clip: 1.0           # Prevent NaN
+  
+  # Learning rate scheduler (NEW for long training)
+  use_scheduler: true
+  scheduler_type: "cosine"     # Smooth decay over 100 rounds
+  scheduler_params:
+    T_max: 100                 # Match num_rounds
+    eta_min: 0.00001           # Final LR
+  
+  # Data
+  test_split: 0.2
+  num_workers: 0              # Set to 0 for Windows compatibility
+  pin_memory: false           # Set false for Windows
+
+# Federated Learning settings
+federated:
+  # IMPORTANT: More clients for multi-category
+  num_clients: 40              # 10 per category (balanced)
+  num_rounds: 100              # Reduced for faster training (was 200)
+  
+  # Client selection (higher for stability with more clients)
+  fraction_fit: 0.4            # 16/40 clients per round
+  fraction_evaluate: 0.5       # 20/40 clients for evaluation
+  min_fit_clients: 16
+  min_evaluate_clients: 20
+  min_available_clients: 40
+  
+  # FedPer specific
+  strategy: "FedPer"
+  shared_layers: 3             # Shared across domains
+  personal_layers: 2           # Domain-specific adaptation
+  
+  # Aggregation
+  aggregation_method: "fedavg"
+  
+# Data generation (for multi-category processing)
+data_generation:
+  # THESIS-OPTIMIZED: Reduced sample sizes for laptop processing
+  # Total: ~220k samples = ~61 hours (~2.5 days at 1 line/sec)
+  max_samples_per_category: null  # Use per_category_samples instead
+  per_category_samples:
+    All_Beauty: 50000        # ~13.8 hours
+    Video_Games: 60000       # ~16.7 hours  
+    Amazon_Fashion: 50000    # ~13.8 hours
+    Baby_Products: 60000     # ~16.7 hours
+  
+  # Non-IID settings
+  alpha: 0.5                   # Dirichlet concentration
+  min_samples_per_client: 300  # Reduced for smaller dataset
+  
+  # Category distribution
+  # Each category gets 10 clients (balanced)
+  clients_per_category: 10
+  
+  # Image processing
+  use_real_images: false        # Set false if network issues
+  image_size: 224
+  skip_image_download: true   # Set true for faster processing (no network needed)
+
+# Logging and checkpointing
+logging:
+  log_level: "INFO"
+  log_every_n_rounds: 10       # Less frequent for long training
+  save_every_n_rounds: 20      # Save checkpoints
+  
+  # Metrics to track
+  track_metrics:
+    - "loss"
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "per_category_accuracy"  # NEW: Track each category
+
+# Evaluation
+evaluation:
+  # Per-category evaluation
+  evaluate_per_category: true  # NEW: Separate metrics per domain
+  
+  # Overall evaluation
+  evaluate_all_clients: false  # False due to large number (40)
+  
+  # Metrics
+  top_k: [1, 3, 5]
+  
+  # Save results
+  save_predictions: true
+  save_embeddings: true        # For t-SNE visualization
+
+# Reproducibility
+seed: 42
+
+# Hardware
+hardware:
+  use_gpu: true                # Enable if available
+  num_gpus: 0.2                # Per client (5 clients per GPU)
+  num_cpus: 1                  # Per client
+  memory_per_client: "2GB"     # Ray resource allocation
+
+# ================================================================
+# THESIS-SPECIFIC SETTINGS
+# ================================================================
+thesis:
+  experiment_name: "fedper_multi_category_thesis"
+  
+  # Analysis
+  analyze_cross_domain: true   # Compare performance across categories
+  analyze_domain_shift: true   # Measure domain adaptation
+  analyze_fairness: true       # Per-category fairness
+  
+  # Visualization
+  plot_per_category: true      # Separate plots per category
+  plot_confusion_matrix: true
+  plot_embeddings: true        # t-SNE colored by category
+  
+  # Ablation studies
+  ablation:
+    test_single_category: false      # Compare with single-domain
+    test_without_personalization: false  # FedAvg baseline
+    test_modality_importance: false  # Remove text/image/behavior
+
+# ================================================================
+# EXPECTED RESULTS (for reference)
+# ================================================================
+expected_results:
+  overall_accuracy: "79-83%"
+  per_category_accuracy:
+    All_Beauty: "80-82%"
+    Video_Games: "81-84%"      # Text-rich, easier
+    Amazon_Fashion: "75-78%"   # More subjective
+    Baby_Products: "80-83%"    # Quality-focused, clearer
+  
+  convergence:
+    round_1: "28-32%"
+    round_50: "60-65%"
+    round_100: "72-76%"
+    round_200: "79-83%"
+  
+  training_time:
+    cpu: "5-7 days"
+    gpu: "2-3 days"
+  
+  fairness_score: "0.90-0.94"  # High = fair across categories
+
+# ================================================================
+# PROCESSING CONFIGURATION
+# ================================================================
+processing:
+  # Multi-category specific
+  balance_categories: false     # Use per_category_samples instead
+  target_samples_per_category: null  # Not used when using per_category_samples
+  
+  # Memory management
+  chunk_size: 10000            # Process in chunks
+  save_checkpoints: true       # Resume if interrupted
+  checkpoint_interval: 50000   # Every 50k samples
+  
+  # Feature extraction
+  text_model: "sentence-transformers/all-MiniLM-L6-v2"
+  image_model: "resnet50"
+  
+  # Filtering
+  min_review_length: 10        # Characters
+  min_rating_count: 2          # Per user
+  remove_duplicates: true
+

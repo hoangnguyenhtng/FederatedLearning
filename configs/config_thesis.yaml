@@ -1,0 +1,153 @@
+# ================================================================
+# CONFIG FOR GRADUATION THESIS
+# Federated Multi-Modal Recommendation System
+# ================================================================
+
+# Data paths
+paths:
+  data_dir: "data"
+  output_dir: "experiments"
+  log_dir: "logs"
+
+# Model architecture
+model:
+  # Input dimensions
+  text_embedding_dim: 384      # SentenceTransformer output
+  image_embedding_dim: 2048    # ResNet-50 output
+  behavior_dim: 32             # Behavior features
+  
+  # Hidden layers (shared base)
+  shared_hidden_dims: [512, 256, 128]
+  
+  # Personal head
+  personal_hidden_dim: 64
+  num_classes: 5               # 5-star rating (1-5)
+  
+  # Regularization
+  dropout: 0.3                 # Increased from 0.2 for better generalization
+  
+  # Multi-modal encoder
+  multimodal_hidden_dim: 256
+  multimodal_output_dim: 384   # Final fusion dimension
+
+# Training configuration
+training:
+  # ============ IMPROVED HYPERPARAMETERS ============
+  batch_size: 32               # Increased from 16 (more stable gradients)
+  local_epochs: 5              # Increased from 3 (more local learning)
+  learning_rate: 0.0001        # Increased from 0.00001 (faster convergence)
+  optimizer: "adam"
+  weight_decay: 1e-4           # Increased from 1e-5 (more regularization)
+  gradient_clip: 1.0           # Keep gradient clipping for safety
+  
+  # Learning rate scheduler (NEW!)
+  use_scheduler: true
+  scheduler_type: "cosine"     # Options: cosine, step, exponential
+  scheduler_params:
+    T_max: 100                 # Cosine annealing period
+    eta_min: 0.00001          # Minimum LR
+  
+  # Data
+  test_split: 0.2
+  num_workers: 2
+  pin_memory: true
+
+# Federated Learning settings
+federated:
+  num_clients: 20              # Increased from 10 (more realistic FL)
+  num_rounds: 100              # Increased from 50 (more training)
+  clients_per_round: 8         # Increased from 4 (more stable aggregation)
+  
+  # Client selection
+  min_fit_clients: 8           # Minimum clients for training
+  min_evaluate_clients: 6      # Increased from 3 (more stable eval)
+  min_available_clients: 20
+  
+  # FedPer specific
+  strategy: "FedPer"
+  
+  # Aggregation
+  fraction_fit: 0.4            # 40% of clients per round
+  fraction_evaluate: 0.3       # 30% of clients for evaluation
+
+# Data generation (for full dataset)
+data_generation:
+  # Use FULL Amazon dataset (not just 10k)
+  max_samples: null            # null = use ALL data
+  
+  # Non-IID settings
+  alpha: 0.5                   # Dirichlet concentration (lower = more non-IID)
+  min_samples_per_client: 200  # Increased minimum
+  
+  # Image processing
+  use_real_images: true        # Set to false if network issues
+  image_size: 224
+  
+  # Categories to use
+  categories:
+    - "All_Beauty"
+    # Add more categories for larger dataset:
+    # - "Toys_and_Games"
+    # - "Sports_and_Outdoors"
+
+# Logging and checkpointing
+logging:
+  log_level: "INFO"
+  log_every_n_rounds: 5        # Log detailed metrics every 5 rounds
+  save_every_n_rounds: 10      # Save checkpoint every 10 rounds
+  
+  # Metrics to track
+  track_metrics:
+    - "loss"
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "confusion_matrix"
+
+# Evaluation
+evaluation:
+  # Evaluate on ALL clients (not sample)
+  evaluate_all_clients: true   # NEW: More accurate evaluation
+  
+  # Save detailed results
+  save_predictions: true
+  save_embeddings: true        # For visualization (t-SNE)
+  
+  # Metrics
+  top_k: [1, 3, 5]            # Top-K accuracy
+
+# Reproducibility
+seed: 42
+
+# Hardware
+hardware:
+  use_gpu: true                # Enable GPU if available
+  num_gpus: 0.2                # Per client
+  num_cpus: 1                  # Per client
+
+# ================================================================
+# THESIS-SPECIFIC SETTINGS
+# ================================================================
+thesis:
+  # Experiment tracking
+  experiment_name: "fedper_multimodal_thesis_v1"
+  
+  # Ablation studies (for thesis)
+  ablation:
+    # Test different architectures
+    test_without_text: false
+    test_without_image: false
+    test_without_behavior: false
+    
+    # Test different FL strategies
+    compare_strategies:
+      - "FedPer"    # Personalized (yours)
+      - "FedAvg"    # Baseline
+      # - "FedProx"   # Alternative
+  
+  # Analysis
+  analyze_client_drift: true   # Track client model divergence
+  analyze_fairness: true       # Check performance across clients
+  visualize_embeddings: true   # t-SNE plots
+

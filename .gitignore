@@ -1,0 +1,65 @@
+# Python Virtual Environment
+fed_rec_env/
+venv/
+env/
+ENV/
+.venv/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data files (thường quá nặng để push lên GitHub)
+data/amazon_2023_processed/
+data/amazon_2023_processed_backup_with_nan/
+data/processed/**/*.pkl
+data/processed/**/*.png
+data/raw/
+data/simulated_clients/
+
+# Model checkpoints và pretrained models (quá nặng)
+models/pretrained/
+experiments/*/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.hdf5
+
+# Docker volumes (dữ liệu runtime)
+configs/volumes/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Environment variables
+.env
+.env.local
