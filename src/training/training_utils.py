@@ -441,6 +441,36 @@ def load_checkpoint(
     return epoch
 
 
+def resolve_amazon_federated_data_dir(config: dict, cwd: Optional[Path] = None) -> Optional[Path]:
+    """
+    Tìm thư mục có Amazon/processed pickle theo client_0/data.pkl.
+    Thứ tự: paths.data_processed trong config → data/amazon_2023_processed (legacy).
+    """
+    root = (cwd or Path.cwd()).resolve()
+    paths = config.get("paths") or {}
+    candidates: List[Path] = []
+    dp = paths.get("data_processed")
+    if dp:
+        candidates.append((root / dp).resolve())
+    candidates.append((root / "data" / "amazon_2023_processed").resolve())
+    seen = set()
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        if (p / "client_0" / "data.pkl").is_file():
+            return p
+    return None
+
+
+def experiments_base_dir(config: dict, cwd: Optional[Path] = None) -> Path:
+    """Thư mục gốc chứa thư mục experiment (fedper_*)."""
+    root = (cwd or Path.cwd()).resolve()
+    paths = config.get("paths") or {}
+    rel = paths.get("experiments_dir") or paths.get("output_dir") or "experiments"
+    return (root / rel).resolve()
+
+
 # Export all functions
 __all__ = [
     'MetricsCalculator',
@@ -451,5 +481,7 @@ __all__ = [
     'train_one_epoch',
     'evaluate',
     'save_checkpoint',
-    'load_checkpoint'
+    'load_checkpoint',
+    'resolve_amazon_federated_data_dir',
+    'experiments_base_dir',
 ]

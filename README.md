@@ -10,17 +10,29 @@ Hệ thống đề xuất sản phẩm sử dụng Federated Learning với dữ
 
 ## 📚 Tài Liệu Hướng Dẫn
 
+### ⭐ Bắt đầu từ đây:
+1. **[PROJECT_COMPLETE_GUIDE.md](PROJECT_COMPLETE_GUIDE.md)** - ⭐⭐⭐ **HƯỚNG DẪN TỔNG HỢP TOÀN BỘ DỰ ÁN** (Đọc đầu tiên!)
+2. **[THESIS_COMPLETION_PLAN.md](THESIS_COMPLETION_PLAN.md)** - ⭐ Kế hoạch chi tiết hoàn thiện đồ án
+3. **[REAL_WORLD_APPLICATION.md](REAL_WORLD_APPLICATION.md)** - ⭐ Ứng dụng thực tế của dự án
+
+### 🎓 Cho Tốt Nghiệp
+
+1. **[THESIS_GUIDE.md](THESIS_GUIDE.md)** - Hướng dẫn sử dụng dự án cho tốt nghiệp
+2. **[EVALUATION_REPORT.md](EVALUATION_REPORT.md)** - Báo cáo đánh giá kết quả training
+3. **[run_pipeline.py](run_pipeline.py)** - Script tổng hợp để chạy toàn bộ pipeline
+
 ### 🆕 Bắt đầu từ đầu (sau khi reset máy)?
 
 1. **[SETUP_NHANH.txt](SETUP_NHANH.txt)** - Đọc đầu tiên! Hướng dẫn 5 phút
 2. **[HUONG_DAN_CAI_DAT_LAI.md](HUONG_DAN_CAI_DAT_LAI.md)** - Hướng dẫn chi tiết từng bước
-3. **[CHECKLIST_CAI_DAT.md](CHECKLIST_CAI_DAT.md)** - Checklist để theo dõi tiến độ
+3. **[CHECKLIST_BAO_VE.md](CHECKLIST_BAO_VE.md)** - Checklist bảo vệ / rà soát trước khi nộp
 
 ### 📖 Tài liệu khác
 
 - **[QUICK_START.md](QUICK_START.md)** - Hướng dẫn chạy nhanh dự án
-- **[TRAINING_EVALUATION_REPORT.md](TRAINING_EVALUATION_REPORT.md)** - Báo cáo kết quả training
-- **[PROJECT_ANALYSIS_REPORT.md](PROJECT_ANALYSIS_REPORT.md)** - Phân tích kiến trúc dự án
+- **[TONG_KET_DU_AN.md](TONG_KET_DU_AN.md)** - Tổng kết đồ án (mục tiêu, đã làm, cấu trúc)
+- **[THESIS_THUC_TIEN_AUDIT.md](THESIS_THUC_TIEN_AUDIT.md)** - Kiểm tra thực tiễn, đồng bộ báo cáo, demo thật vs minh họa
+- **[INDEX_TAI_LIEU.md](INDEX_TAI_LIEU.md)** - Mục lục toàn bộ tài liệu `.md`
 
 ---
 
@@ -51,14 +63,15 @@ python src\training\federated_training_pipeline.py
 ## 🎯 Tính Năng Chính
 
 ### ✨ Federated Learning
-- **Phân tán dữ liệu**: Mô phỏng 40 clients với dữ liệu Non-IID
+- **Phân tán dữ liệu**: Mô phỏng nhiều clients (mặc định **10** trong `configs/config.yaml`, có thể tăng) với dữ liệu Non-IID
 - **Aggregation**: FedAvg, FedProx algorithms
 - **Privacy**: Differential Privacy support (Opacus)
 
 ### 🎨 Multi-modal Learning
-- **Text**: BERT embeddings cho reviews & product descriptions
-- **Image**: ResNet-50 features từ product images
-- **Behavioral**: User interaction patterns
+- **Text**: Embeddings 384-dim (Sentence-Transformers / pipeline xử lý Amazon)
+- **Image**: ResNet-50 features (2048-dim) từ ảnh sản phẩm
+- **Behavioral**: Vector hành vi (32-dim)
+- **Fusion**: Adaptive fusion (trọng số text/image/behavior học được) trong `multimodal_encoder.py`
 
 ### 📊 Real-world Dataset
 - **Amazon Reviews 2023**: 4 categories (Beauty, Fashion, Baby, Games)
@@ -67,8 +80,8 @@ python src\training\federated_training_pipeline.py
 
 ### 🔧 Advanced Features
 - **FedPer**: Personalized federated learning
-- **Attention Mechanism**: Multi-head attention fusion
-- **Vector DB**: Milvus integration cho item retrieval
+- **Attention / fusion**: Module attention trong `attention_mechanism.py`; fusion chính dùng adaptive weights trong encoder
+- **Vector DB**: Milvus integration cho item retrieval (tùy chọn)
 - **Dashboard**: Streamlit UI for explainable AI
 
 ---
@@ -80,7 +93,8 @@ FederatedLearning/
 │
 ├── 📄 SETUP_NHANH.txt              # Đọc đầu tiên!
 ├── 📄 HUONG_DAN_CAI_DAT_LAI.md     # Hướng dẫn chi tiết
-├── 📄 CHECKLIST_CAI_DAT.md         # Checklist setup
+├── 📄 CHECKLIST_BAO_VE.md          # Checklist bảo vệ / nộp bài
+├── 📄 PROJECT_HEALTH.md           # Rà soát code & đầu việc còn lại
 │
 ├── src/
 │   ├── data_generation/            # Data processing & generation
@@ -120,9 +134,9 @@ FederatedLearning/
 │
 └── experiments/                    # Training results (not in Git)
     └── fedper_multimodal_v1/
-        ├── results.json
-        ├── global_model.pt
-        └── training_history.png
+        ├── models/global_model_final.pt
+        ├── metrics/training_history.json
+        └── metrics/training_curves.png
 ```
 
 ---
@@ -138,10 +152,10 @@ FederatedLearning/
 | Synthetic Data | 30-40% | ~1.5 | 15-20 min |
 
 ### Model Architecture
-- **Input**: Text (768-dim) + Image (2048-dim) + Behavioral features
-- **Fusion**: Multi-head attention (8 heads)
-- **Output**: Item embeddings (256-dim) → Rating prediction
-- **Personalization**: FedPer with local & global layers
+- **Input**: Text (384-dim) + Image (2048-dim) + Behavior (32-dim)
+- **Encoder**: `MultiModalEncoder` → unified 384-dim + fusion weights (3 chiều)
+- **FedPer**: Shared base + personal head; **training**: dự đoán rating **5 lớp** (0–4)
+- **API demo**: có thể dùng `num_classes = số item` cho top-K; cần đồng bộ với checkpoint khi deploy
 
 ---
 
@@ -179,7 +193,7 @@ python src\data_generation\process_amazon_data.py
 
 ### 2️⃣ Training
 ```powershell
-# Federated training (50 rounds)
+# Federated training (số round theo config.yaml, mặc định 100)
 python src\training\federated_training_pipeline.py
 ```
 
@@ -189,7 +203,7 @@ python src\training\federated_training_pipeline.py
 python src\training\evaluate_federated_model.py
 
 # Check results
-cat experiments\fedper_multimodal_v1\results.json
+type experiments\fedper_multimodal_v1\metrics\training_history.json
 ```
 
 ### 4️⃣ Visualization (Optional)
@@ -202,23 +216,25 @@ streamlit run src\dashboard\explainable_ui.py
 
 ## 📊 Configuration
 
-Chỉnh sửa `configs/config.yaml`:
+Chỉnh sửa `configs/config.yaml` (cấu trúc thực tế):
 
 ```yaml
-# Federated Learning
-num_clients: 40
-num_rounds: 50
-clients_per_round: 10
+federated:
+  num_clients: 10
+  num_rounds: 100
+  fraction_fit: 0.6
+  fraction_evaluate: 1.0
 
-# Model
-embedding_dim: 256
-attention_heads: 8
-dropout: 0.3
+model:
+  text_embedding_dim: 384
+  image_embedding_dim: 2048
+  behavior_embedding_dim: 32
+  num_classes: 5   # rating 1–5 → 0–4 khi train FL
 
-# Training
-learning_rate: 0.001
-batch_size: 32
-local_epochs: 2
+training:
+  batch_size: 32
+  local_epochs: 5
+  learning_rate: 0.0001
 ```
 
 ---
@@ -316,7 +332,7 @@ Có câu hỏi? Xem:
 
 1. **[SETUP_NHANH.txt](SETUP_NHANH.txt)** - Quick start
 2. **[HUONG_DAN_CAI_DAT_LAI.md](HUONG_DAN_CAI_DAT_LAI.md)** - Detailed guide
-3. **[CHECKLIST_CAI_DAT.md](CHECKLIST_CAI_DAT.md)** - Installation checklist
+3. **[CHECKLIST_BAO_VE.md](CHECKLIST_BAO_VE.md)** - Checklist bảo vệ / cài đặt tối thiểu
 4. **Issues** - Open an issue on GitHub
 
 ---
@@ -349,9 +365,9 @@ If you find this project useful, please consider giving it a star ⭐
 
 ---
 
-**📅 Last Updated**: January 12, 2026  
-**🔖 Version**: 1.0.0  
-**✅ Status**: Production Ready
+**📅 Last Updated**: March 28, 2026  
+**🔖 Version**: 1.0.1  
+**✅ Status**: Core ready (đồng bộ README với `config.yaml` và pipeline hiện tại)
 
 ---
 

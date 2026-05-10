@@ -399,9 +399,9 @@ class FedPerClient(fl.client.NumPyClient):
         accuracy = correct / total
         
         metrics = {
-            "test_loss": avg_loss,
-            "accuracy": accuracy,
-            "client_id": self.client_id
+            "test_loss": float(avg_loss),
+            "accuracy": float(accuracy),
+            "client_id": self.client_id,
         }
         
         num_examples = len(self.test_loader.dataset)

@@ -1,0 +1,163 @@
+{
+    "num_clients": 40,
+    "categories": [
+        "All_Beauty",
+        "Video_Games",
+        "Amazon_Fashion",
+        "Baby_Products"
+    ],
+    "total_samples": 220000,
+    "processing_date": "2026-01-07 11:53:08",
+    "config": {
+        "categories": [
+            "All_Beauty",
+            "Video_Games",
+            "Amazon_Fashion",
+            "Baby_Products"
+        ],
+        "paths": {
+            "data_dir": "data",
+            "data_raw": "data/raw/amazon_2023",
+            "data_processed": "data/processed/multi_category",
+            "output_dir": "experiments",
+            "log_dir": "logs"
+        },
+        "model": {
+            "text_embedding_dim": 384,
+            "image_embedding_dim": 2048,
+            "behavior_dim": 32,
+            "shared_hidden_dims": [
+                512,
+                256,
+                128
+            ],
+            "personal_hidden_dim": 64,
+            "num_classes": 5,
+            "dropout": 0.3,
+            "multimodal_hidden_dim": 256,
+            "multimodal_output_dim": 384
+        },
+        "training": {
+            "batch_size": 32,
+            "local_epochs": 5,
+            "learning_rate": 0.0001,
+            "optimizer": "adam",
+            "weight_decay": "1e-4",
+            "gradient_clip": 1.0,
+            "use_scheduler": true,
+            "scheduler_type": "cosine",
+            "scheduler_params": {
+                "T_max": 100,
+                "eta_min": 1e-05
+            },
+            "test_split": 0.2,
+            "num_workers": 0,
+            "pin_memory": false
+        },
+        "federated": {
+            "num_clients": 40,
+            "num_rounds": 100,
+            "fraction_fit": 0.4,
+            "fraction_evaluate": 0.5,
+            "min_fit_clients": 16,
+            "min_evaluate_clients": 20,
+            "min_available_clients": 40,
+            "strategy": "FedPer",
+            "shared_layers": 3,
+            "personal_layers": 2,
+            "aggregation_method": "fedavg"
+        },
+        "data_generation": {
+            "max_samples_per_category": null,
+            "per_category_samples": {
+                "All_Beauty": 50000,
+                "Video_Games": 60000,
+                "Amazon_Fashion": 50000,
+                "Baby_Products": 60000
+            },
+            "alpha": 0.5,
+            "min_samples_per_client": 300,
+            "clients_per_category": 10,
+            "use_real_images": false,
+            "image_size": 224,
+            "skip_image_download": true
+        },
+        "logging": {
+            "log_level": "INFO",
+            "log_every_n_rounds": 10,
+            "save_every_n_rounds": 20,
+            "track_metrics": [
+                "loss",
+                "accuracy",
+                "precision",
+                "recall",
+                "f1_score",
+                "per_category_accuracy"
+            ]
+        },
+        "evaluation": {
+            "evaluate_per_category": true,
+            "evaluate_all_clients": false,
+            "top_k": [
+                1,
+                3,
+                5
+            ],
+            "save_predictions": true,
+            "save_embeddings": true
+        },
+        "seed": 42,
+        "hardware": {
+            "use_gpu": true,
+            "num_gpus": 0.2,
+            "num_cpus": 1,
+            "memory_per_client": "2GB"
+        },
+        "thesis": {
+            "experiment_name": "fedper_multi_category_thesis",
+            "analyze_cross_domain": true,
+            "analyze_domain_shift": true,
+            "analyze_fairness": true,
+            "plot_per_category": true,
+            "plot_confusion_matrix": true,
+            "plot_embeddings": true,
+            "ablation": {
+                "test_single_category": false,
+                "test_without_personalization": false,
+                "test_modality_importance": false
+            }
+        },
+        "expected_results": {
+            "overall_accuracy": "79-83%",
+            "per_category_accuracy": {
+                "All_Beauty": "80-82%",
+                "Video_Games": "81-84%",
+                "Amazon_Fashion": "75-78%",
+                "Baby_Products": "80-83%"
+            },
+            "convergence": {
+                "round_1": "28-32%",
+                "round_50": "60-65%",
+                "round_100": "72-76%",
+                "round_200": "79-83%"
+            },
+            "training_time": {
+                "cpu": "5-7 days",
+                "gpu": "2-3 days"
+            },
+            "fairness_score": "0.90-0.94"
+        },
+        "processing": {
+            "balance_categories": false,
+            "target_samples_per_category": null,
+            "chunk_size": 10000,
+            "save_checkpoints": true,
+            "checkpoint_interval": 50000,
+            "text_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "image_model": "resnet50",
+            "min_review_length": 10,
+            "min_rating_count": 2,
+            "remove_duplicates": true
+        }
+    }
+}

@@ -11,12 +11,19 @@ categories:
   - "Amazon_Fashion"       # 883k reviews - style descriptions
   - "Baby_Products"        # 915k reviews - safety/quality focus
 
+# Đồng bộ với federated_training_pipeline / training_utils.experiments_base_dir
+experiment:
+  name: "fedper_multi_category"
+  description: "Multi-category Amazon FedPer thesis"
+  seed: 42
+
 # Data paths
 paths:
   data_dir: "data"
   data_raw: "data/raw/amazon_2023"
   data_processed: "data/processed/multi_category"
   output_dir: "experiments"
+  experiments_dir: "experiments"
   log_dir: "logs"
 
 # Model architecture
@@ -105,9 +112,9 @@ data_generation:
   clients_per_category: 10
   
   # Image processing
-  use_real_images: false        # Set false if network issues
+  use_real_images: true        
   image_size: 224
-  skip_image_download: true   # Set true for faster processing (no network needed)
+  skip_image_download: false   
 
 # Logging and checkpointing
 logging:

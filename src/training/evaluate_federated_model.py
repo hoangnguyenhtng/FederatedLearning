@@ -12,14 +12,16 @@ import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import numpy as np
 
-sys.path.append(str(Path(__file__).parent.parent))
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
 
-from models.recommendation_model import FedPerRecommender
-from data_generation.federated_dataloader import FederatedDataLoader
-from training_utils import evaluate, MetricsCalculator
+from src.models.recommendation_model import FedPerRecommender
+from src.training.training_utils import evaluate, MetricsCalculator, resolve_amazon_federated_data_dir
 
 
 class FederatedEvaluator:
@@ -50,25 +52,81 @@ class FederatedEvaluator:
         print(f"   Experiment: {experiment_dir}")
         print(f"   Device: {self.device}")
     
+    def _load_federated_dataloaders(self) -> Dict[int, tuple]:
+        """
+        Giống logic trong federated_training_pipeline._load_data:
+        Amazon nếu có, không thì synthetic — để evaluation khớp dữ liệu đã train.
+        """
+        from src.data_generation.federated_dataloader import get_federated_dataloaders
+        
+        num_clients = self.config['federated']['num_clients']
+        batch_size = self.config['training']['batch_size']
+        test_split = self.config['training'].get('test_split', 0.2)
+        paths_cfg = self.config.get('paths') or {}
+        amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
+        synthetic_dir = (project_root / paths_cfg.get('data_dir', 'data') / 'simulated_clients').resolve()
+
+        if amazon_dir is not None:
+            print(f"📂 Evaluation data: processed Amazon pickles → {amazon_dir}")
+            from src.data_generation.amazon_dataloader import get_amazon_dataloaders
+            return get_amazon_dataloaders(
+                num_clients=num_clients,
+                data_dir=str(amazon_dir),
+                batch_size=batch_size,
+                test_split=test_split,
+            )
+        if synthetic_dir.exists():
+            print("📂 Evaluation data: simulated_clients")
+            loaders_list = get_federated_dataloaders(
+                num_clients=num_clients,
+                data_dir=str(synthetic_dir),
+                batch_size=batch_size,
+                test_split=test_split,
+            )
+            out = {}
+            for client_id, loaders in enumerate(loaders_list):
+                if loaders and len(loaders) == 2:
+                    tr, te = loaders
+                    if tr is not None and te is not None:
+                        out[client_id] = (tr, te)
+            return out
+        raise FileNotFoundError(
+            f"No data for evaluation. Expected Amazon at {amazon_dir} or synthetic at {synthetic_dir}"
+        )
+    
     def load_model(self, checkpoint_path: str) -> nn.Module:
         """Load trained model from checkpoint"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        # Create model
+        # Create model using current config structure
         model_config = self.config['model']
-        model = FedPerRecommender(
-            text_dim=model_config['text']['embedding_dim'],
-            image_dim=model_config['image']['output_dim'],
-            behavior_dim=model_config['behavior']['output_dim'],
-            hidden_dims=model_config['recommendation']['hidden_dims'],
-            num_classes=5,
-            num_users=1000,
-            num_items=10000,
-            shared_layers=self.config['federated']['shared_layers'],
-            personal_layers=self.config['federated']['personal_layers']
+        from src.models.multimodal_encoder import MultiModalEncoder
+        from src.models.recommendation_model import FedPerRecommender
+        
+        # Create multimodal encoder (tên tham số khớp multimodal_encoder.py)
+        multimodal_encoder = MultiModalEncoder(
+            text_dim=model_config.get('text_embedding_dim', 384),
+            image_dim=model_config.get('image_embedding_dim', 2048),
+            behavior_dim=model_config.get('behavior_embedding_dim', 32),
+            hidden_dim=model_config.get('hidden_dim', 256),
+            output_dim=384,
         )
         
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Create FedPerRecommender
+        model = FedPerRecommender(
+            multimodal_encoder=multimodal_encoder,
+            shared_hidden_dims=model_config['shared_hidden_dims'],
+            personal_hidden_dims=model_config['personal_hidden_dims'],
+            num_classes=model_config['num_classes'],
+            dropout=model_config.get('dropout', 0.2)
+        )
+        
+        # Load state dict
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+        
         model.to(self.device)
         model.eval()
         
@@ -96,16 +154,14 @@ class FederatedEvaluator:
         
         results = []
         
+        dataloaders = self._load_federated_dataloaders()
+        
         for client_id in client_ids:
-            # Load client data
-            data_loader = FederatedDataLoader(
-                client_id=client_id,
-                data_dir='./data/simulated_clients',
-                batch_size=self.config['data']['batch_size'],
-                test_split=self.config['data']['test_split']
-            )
+            if client_id not in dataloaders:
+                print(f"⚠️  Client {client_id} not found, skipping...")
+                continue
             
-            _, test_loader = data_loader.create_dataloaders()
+            train_loader, test_loader = dataloaders[client_id]
             
             # Evaluate
             metrics = evaluate(
@@ -117,14 +173,8 @@ class FederatedEvaluator:
                 compute_all_metrics=True
             )
             
-            # Get client metadata
-            metadata = data_loader.metadata
-            
             result = {
                 'client_id': client_id,
-                'num_users': metadata['num_users'],
-                'num_interactions': metadata['num_interactions'],
-                'preference_distribution': metadata['preference_distribution'],
                 **metrics
             }
             
@@ -149,6 +199,10 @@ class FederatedEvaluator:
             Aggregated metrics by preference type
         """
         print("\n📊 Aggregating by preference type...")
+        
+        if 'preference_distribution' not in results_df.columns:
+            print("⚠️  Không có cột preference_distribution (chưa join metadata client). Bỏ qua nhóm preference.")
+            return pd.DataFrame()
         
         # Extract dominant preference for each client
         preference_data = []
@@ -237,6 +291,9 @@ class FederatedEvaluator:
             axes[0, 1].set_xticks(x)
             axes[0, 1].set_xticklabels(preference_df['preference_type'], rotation=45)
             axes[0, 1].legend()
+        else:
+            axes[0, 1].text(0.5, 0.5, 'No preference metadata\n(join users.csv in future)', ha='center', va='center', transform=axes[0, 1].transAxes)
+            axes[0, 1].set_title('Metrics by Preference Type')
         
         # 3. NDCG@10 comparison
         axes[1, 0].bar(results_df['client_id'], results_df['ndcg@10'])
@@ -315,18 +372,52 @@ class FederatedEvaluator:
 
 def main():
     """Main evaluation script"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Evaluate federated checkpoint")
+    parser.add_argument(
+        "--experiment-dir",
+        type=str,
+        default="./experiments/fedper_multimodal_v1",
+        help="Thư mục experiment (models/global_model_final.pt)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="./configs/config.yaml",
+        help="YAML trùng với train (num_clients, data paths, …)",
+    )
+    args = parser.parse_args()
+
     print("="*70)
     print("FEDERATED MODEL EVALUATION")
     print("="*70)
     
     # Configuration
-    experiment_dir = './experiments/fedper_multimodal_v1'
-    checkpoint_path = f'{experiment_dir}/models/global_model_round_50.pt'
+    experiment_dir = args.experiment_dir
+    checkpoint_path = f'{experiment_dir}/models/global_model_final.pt'
+    
+    # Check if checkpoint exists
+    if not Path(checkpoint_path).exists():
+        print(f"⚠️  Checkpoint not found: {checkpoint_path}")
+        print("   Looking for alternative checkpoints...")
+        models_dir = Path(experiment_dir) / "models"
+        if models_dir.exists():
+            checkpoints = list(models_dir.glob("*.pt"))
+            if checkpoints:
+                checkpoint_path = str(checkpoints[0])
+                print(f"   Using: {checkpoint_path}")
+            else:
+                print("❌ No checkpoints found!")
+                return
+        else:
+            print("❌ Models directory not found!")
+            return
     
     # Create evaluator
     evaluator = FederatedEvaluator(
         experiment_dir=experiment_dir,
-        config_path='./configs/config.yaml'
+        config_path=args.config,
     )
     
     # Load model
