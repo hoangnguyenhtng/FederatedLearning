@@ -36,8 +36,14 @@ model:
   # Regularization
   dropout: 0.3                 # Higher for multi-domain generalization
   
-  # Multi-modal encoder
-  multimodal_hidden_dim: 256
+  # Multi-modal e
+  
+  
+  
+  
+  
+  hjghjjkklncoder
+  multimodanhjjjjl_hidden_dim: 256
   multimodal_output_dim: 384
 
 # Training configuration

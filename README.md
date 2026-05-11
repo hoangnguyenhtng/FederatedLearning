@@ -10,17 +10,13 @@ Hệ thống đề xuất sản phẩm sử dụng Federated Learning với dữ
 
 ## 📚 Tài Liệu Hướng Dẫn
 
-### 🆕 Bắt đầu từ đầu (sau khi reset máy)?
+### ✅ Đọc 1 file là đủ (khuyến nghị)
 
-1. **[SETUP_NHANH.txt](SETUP_NHANH.txt)** - Đọc đầu tiên! Hướng dẫn 5 phút
-2. **[HUONG_DAN_CAI_DAT_LAI.md](HUONG_DAN_CAI_DAT_LAI.md)** - Hướng dẫn chi tiết từng bước
-3. **[CHECKLIST_CAI_DAT.md](CHECKLIST_CAI_DAT.md)** - Checklist để theo dõi tiến độ
+- **[PROJECT_GUIDE.md](PROJECT_GUIDE.md)** — Tất cả: setup → Amazon → train → evaluate → API → dashboard (end-to-end) + ghi chú bảo vệ
 
-### 📖 Tài liệu khác
+### 📖 Tài liệu chi tiết (chỉ khi cần)
 
-- **[QUICK_START.md](QUICK_START.md)** - Hướng dẫn chạy nhanh dự án
-- **[TRAINING_EVALUATION_REPORT.md](TRAINING_EVALUATION_REPORT.md)** - Báo cáo kết quả training
-- **[PROJECT_ANALYSIS_REPORT.md](PROJECT_ANALYSIS_REPORT.md)** - Phân tích kiến trúc dự án
+Nếu cần tài liệu chi tiết/troubleshooting, xem trực tiếp trong `PROJECT_GUIDE.md` (mục Troubleshooting).
 
 ---
 
@@ -78,9 +74,8 @@ python src\training\federated_training_pipeline.py
 ```
 FederatedLearning/
 │
-├── 📄 SETUP_NHANH.txt              # Đọc đầu tiên!
-├── 📄 HUONG_DAN_CAI_DAT_LAI.md     # Hướng dẫn chi tiết
-├── 📄 CHECKLIST_CAI_DAT.md         # Checklist setup
+├── 📄 README.md                    # Tổng quan
+├── 📄 PROJECT_GUIDE.md             # Hướng dẫn end-to-end (1 file)
 │
 ├── src/
 │   ├── data_generation/            # Data processing & generation
@@ -120,9 +115,9 @@ FederatedLearning/
 │
 └── experiments/                    # Training results (not in Git)
     └── fedper_multimodal_v1/
-        ├── results.json
-        ├── global_model.pt
-        └── training_history.png
+        ├── models/global_model_final.pt
+        ├── metrics/training_history.json
+        └── evaluation/amazon_evaluation_summary.json
 ```
 
 ---
@@ -186,10 +181,7 @@ python src\training\federated_training_pipeline.py
 ### 3️⃣ Evaluation
 ```powershell
 # Evaluate model
-python src\training\evaluate_federated_model.py
-
-# Check results
-cat experiments\fedper_multimodal_v1\results.json
+python src\training\evaluate_federated_model.py --config configs\config.yaml --amazon_dir data\amazon_2023_processed
 ```
 
 ### 4️⃣ Visualization (Optional)
@@ -250,8 +242,7 @@ SAMPLE_SIZE = 5000  # Giảm từ 10000
 # Cài lại dependencies
 pip install -r requirements.txt
 ```
-
-Xem thêm tại [HUONG_DAN_CAI_DAT_LAI.md](HUONG_DAN_CAI_DAT_LAI.md)
+Xem thêm trong `PROJECT_GUIDE.md` (mục Troubleshooting).
 
 ---
 
@@ -312,12 +303,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-Có câu hỏi? Xem:
-
-1. **[SETUP_NHANH.txt](SETUP_NHANH.txt)** - Quick start
-2. **[HUONG_DAN_CAI_DAT_LAI.md](HUONG_DAN_CAI_DAT_LAI.md)** - Detailed guide
-3. **[CHECKLIST_CAI_DAT.md](CHECKLIST_CAI_DAT.md)** - Installation checklist
-4. **Issues** - Open an issue on GitHub
+Có câu hỏi? Xem `PROJECT_GUIDE.md` trước, sau đó mở GitHub Issues nếu cần.
 
 ---
 
@@ -355,10 +341,44 @@ If you find this project useful, please consider giving it a star ⭐
 
 ---
 
-<div align="center">
+Tuần 1 (Ngày 1–7): “Stabilize & Validate” — kiểm tra lại model/pipeline là ưu tiên số 1
+Chạy lại end-to-end 2 lần với Amazon (10k samples trước):
+Process → Train → Evaluate → API → Dashboard
+Ghi lại: seed/config, thời gian chạy, file output
+Sanity checks bắt buộc:
+Loss giảm, metrics không “ảo”
+Không NaN/Inf
+Kiểm tra cân bằng nhãn (rating 1–5) và confusion matrix (nếu cần thêm)
+Chốt cấu hình thesis:
+1 config “demo nhanh” (ít rounds, nhanh)
+1 config “final” (đủ rounds để báo cáo)
+Fix những điểm còn yếu:
+Nếu recommendation còn “kém thuyết phục”: tăng candidate pool, cải thiện cách tạo behavior features, hoặc dùng Milvus retrieval (nếu bạn bật Milvus)
+Deliverables cuối tuần:
 
-### 🚀 Ready to start? Check [SETUP_NHANH.txt](SETUP_NHANH.txt) first!
+1 lần chạy “final” có checkpoint + amazon_evaluation_summary.json
+Ảnh/plot training curves + bảng metrics tổng
+Tuần 2 (Ngày 8–14): “Experiments that matter” — đủ số liệu để bảo vệ
+Làm tối thiểu 3 thí nghiệm (đủ để hội đồng thấy có so sánh):
 
-Made with ❤️ for Federated Learning Research
+Baseline 1: FedAvg (tắt FedPer/personal head hoặc chạy strategy FedAvg nếu đã có)
+Ablation modalities: tắt lần lượt Text / Image / Behavior (3 run nhỏ, có thể ít rounds)
+Non-IID sensitivity: thay alpha (ví dụ 0.1 vs 0.5 vs 1.0) chạy ít rounds để vẽ trend
+Deliverables cuối tuần:
 
-</div>
+1 bảng so sánh (NDCG@10, MRR, Accuracy, Loss) + 1–2 biểu đồ
+Kết luận rõ: FedPer hơn baseline bao nhiêu, modality nào quan trọng, non-IID ảnh hưởng thế nào
+Tuần 3 (Ngày 15–21): “Polish & Defense-ready” — demo web + slide + rehearsal
+Demo e-commerce (khả thi trong 3 tuần):
+Nếu bạn có thời gian frontend: dựng React/Vite + các trang: Catalog (pagination), Product detail, Cart, Recommendations + Explain toggle
+Nếu không: Streamlit dashboard + FastAPI docs vẫn đủ, nhưng cần polish UI/flow demo (kịch bản 3–5 phút)
+Chuẩn hóa repo & tái lập:
+PROJECT_GUIDE.md có “Demo script bảo vệ” + “Test plan”
+Chốt commands chạy 1 máy khác vẫn được
+Slide & bảo vệ:
+15–20 slides: problem → method → system → experiments → demo → conclusion/limitations
+Chuẩn bị Q&A: privacy claim, trade-off accuracy, non-IID realism, explainability
+Deliverables cuối tuần:
+
+Demo chạy ổn (kể cả offline) + video backup
+Slide hoàn chỉnh + luyện demo 3 lần

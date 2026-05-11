@@ -262,6 +262,18 @@ class AmazonDataProcessor:
             processed_data.append({
                 'user_id': review['user_id'],
                 'item_id': parent_asin,
+                # Metadata for demo/UI (best-effort, may be missing)
+                'item_title': item_meta.get('title', '') if isinstance(item_meta, dict) else '',
+                'item_category': item_meta.get('main_category', '') if isinstance(item_meta, dict) else '',
+                'item_brand': item_meta.get('brand', '') if isinstance(item_meta, dict) else '',
+                'item_price': item_meta.get('price', 0.0) if isinstance(item_meta, dict) else 0.0,
+                'item_image_url': (
+                    (
+                        (item_meta.get('images', [{}])[0].get('large') if item_meta.get('images') else None)
+                        or (item_meta.get('images', [{}])[0].get('thumb') if item_meta.get('images') else None)
+                    )
+                    if isinstance(item_meta, dict) else None
+                ),
                 'rating': rating,
                 'label': label,
                 'text_embedding': text_embedding.tolist(),
@@ -350,6 +362,45 @@ class AmazonDataProcessor:
                   f"Users: {client_df['user_id'].nunique()}")
         
         print(f"\n✅ All data saved to: {self.output_dir}")
+
+        # Also save global item/user tables for API + e-commerce demo
+        try:
+            all_df = pd.concat(list(client_dfs.values()), ignore_index=True) if client_dfs else None
+            if all_df is not None and len(all_df) > 0:
+                # Items table (unique by item_id)
+                item_cols = [
+                    "item_id",
+                    "item_title",
+                    "item_category",
+                    "item_brand",
+                    "item_price",
+                    "item_image_url",
+                ]
+                existing_item_cols = [c for c in item_cols if c in all_df.columns]
+                items_df = (
+                    all_df[existing_item_cols]
+                    .drop_duplicates(subset=["item_id"])
+                    .reset_index(drop=True)
+                )
+                items_path = self.output_dir / "items_global.csv"
+                items_df.to_csv(items_path, index=False, encoding="utf-8")
+                print(f"✅ Saved global items table: {items_path} ({len(items_df)} items)")
+
+                # Users table (unique by user_id) with simple stats
+                users_df = (
+                    all_df.groupby("user_id")
+                    .agg(
+                        num_interactions=("item_id", "count"),
+                        avg_rating_given=("rating", "mean"),
+                        last_timestamp=("timestamp", "max"),
+                    )
+                    .reset_index()
+                )
+                users_path = self.output_dir / "users_global.csv"
+                users_df.to_csv(users_path, index=False, encoding="utf-8")
+                print(f"✅ Saved global users table: {users_path} ({len(users_df)} users)")
+        except Exception as e:
+            print(f"⚠️  Could not save global items/users tables: {e}")
 
 
 def main():
