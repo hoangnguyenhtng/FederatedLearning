@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Federated Learning Demo — Đồ Án Tốt Nghiệp</title>
+    <meta name="description" content="Demo trực quan hệ thống Federated Learning for Multi-modal Recommendation">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span class="logo-icon">🛡️</span>
+                <div>
+                    <h1>Federated Learning</h1>
+                    <p class="subtitle">Multi-modal Recommendation System</p>
+                </div>
+            </div>
+            <nav class="nav" id="mainNav">
+                <button class="nav-btn active" data-tab="overview">Tổng Quan</button>
+                <button class="nav-btn" data-tab="privacy">Bảo Mật</button>
+                <button class="nav-btn" data-tab="multimodal">Multi-Modal</button>
+                <button class="nav-btn" data-tab="training">Kết Quả</button>
+                <button class="nav-btn" data-tab="architecture">Kiến Trúc</button>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Tab: Overview -->
+    <section class="tab-content active" id="tab-overview">
+        <div class="hero">
+            <h2 class="hero-title">Hệ Thống Đề Xuất Sản Phẩm<br><span class="gradient-text">Bảo Vệ Quyền Riêng Tư</span></h2>
+            <p class="hero-desc">Ứng dụng Federated Learning kết hợp Multi-modal Fusion để tạo gợi ý cá nhân hóa mà <strong>không bao giờ chia sẻ dữ liệu gốc</strong> của người dùng.</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">👥</div>
+                <div class="stat-value" id="statClients">10</div>
+                <div class="stat-label">Federated Clients</div>
+                <div class="stat-desc">Mỗi client giữ data riêng</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📊</div>
+                <div class="stat-value" id="statSamples">1,034</div>
+                <div class="stat-label">Training Samples</div>
+                <div class="stat-desc">Amazon Reviews 2023</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🔄</div>
+                <div class="stat-value" id="statRounds">100</div>
+                <div class="stat-label">FL Rounds</div>
+                <div class="stat-desc">Convergence đạt round ~30</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🧠</div>
+                <div class="stat-value">3</div>
+                <div class="stat-label">Modalities</div>
+                <div class="stat-desc">Text + Image + Behavior</div>
+            </div>
+        </div>
+
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-icon">🔒</span>
+                    <h3>Privacy by Design</h3>
+                </div>
+                <p>Dữ liệu cá nhân <strong>không bao giờ rời khỏi thiết bị</strong>. Chỉ model parameters (trọng số) được gửi về server — không thể truy ngược ra dữ liệu gốc.</p>
+                <div class="feature-tag">FedPer + Differential Privacy</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-icon">🎯</span>
+                    <h3>Cá Nhân Hóa</h3>
+                </div>
+                <p>Kiến trúc <strong>FedPer</strong> giữ lại personal layers riêng cho mỗi user, cho phép mô hình thích ứng với sở thích cá nhân mà vẫn học từ cộng đồng.</p>
+                <div class="feature-tag">Shared Base + Personal Head</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-header">
+                    <span class="feature-icon">🔗</span>
+                    <h3>Multi-Modal Fusion</h3>
+                </div>
+                <p>Kết hợp thông tin từ <strong>3 nguồn</strong>: nội dung văn bản (reviews), đặc trưng hình ảnh, và hành vi mua hàng — với trọng số học được cho mỗi user.</p>
+                <div class="feature-tag">Adaptive Attention Fusion</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab: Privacy -->
+    <section class="tab-content" id="tab-privacy">
+        <h2 class="section-title">🔒 Bảo Vệ Dữ Liệu Cá Nhân</h2>
+        <p class="section-desc">So sánh cách tiếp cận truyền thống vs. Federated Learning</p>
+
+        <div class="comparison-container">
+            <div class="comparison-card danger">
+                <div class="comparison-header">
+                    <h3>❌ Machine Learning Truyền Thống</h3>
+                    <span class="risk-badge high">RỦI RO CAO</span>
+                </div>
+                <div class="flow-diagram" id="traditionalFlow">
+                    <div class="flow-step user-step">
+                        <div class="flow-icon">👤</div>
+                        <div class="flow-label">User Data</div>
+                        <div class="flow-detail">Reviews, purchases, ratings...</div>
+                    </div>
+                    <div class="flow-arrow danger-arrow">
+                        <span>📤 GỬI TOÀN BỘ DỮ LIỆU</span>
+                    </div>
+                    <div class="flow-step server-step danger-step">
+                        <div class="flow-icon">🏢</div>
+                        <div class="flow-label">Central Server</div>
+                        <div class="flow-detail">Lưu trữ TẤT CẢ dữ liệu</div>
+                    </div>
+                </div>
+                <div class="risk-list">
+                    <div class="risk-item">⚠️ Server bị hack → lộ toàn bộ data</div>
+                    <div class="risk-item">⚠️ Bên thứ 3 có thể truy cập</div>
+                    <div class="risk-item">⚠️ Vi phạm GDPR / Luật an ninh mạng</div>
+                </div>
+            </div>
+
+            <div class="comparison-card safe">
+                <div class="comparison-header">
+                    <h3>✅ Federated Learning (Đồ Án)</h3>
+                    <span class="risk-badge low">AN TOÀN</span>
+                </div>
+                <div class="flow-diagram" id="federatedFlow">
+                    <div class="flow-step user-step">
+                        <div class="flow-icon">👤</div>
+                        <div class="flow-label">User Data</div>
+                        <div class="flow-detail">Giữ LOCAL trên thiết bị</div>
+                    </div>
+                    <div class="flow-arrow safe-arrow">
+                        <span>📤 CHỈ GỬI MODEL WEIGHTS</span>
+                    </div>
+                    <div class="flow-step server-step safe-step">
+                        <div class="flow-icon">🖥️</div>
+                        <div class="flow-label">FL Server</div>
+                        <div class="flow-detail">Chỉ aggregate weights</div>
+                    </div>
+                </div>
+                <div class="safe-list">
+                    <div class="safe-item">✅ Data không bao giờ rời thiết bị</div>
+                    <div class="safe-item">✅ Server không thể đọc data gốc</div>
+                    <div class="safe-item">✅ Tuân thủ GDPR / Privacy laws</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Privacy Demo -->
+        <div class="privacy-demo-card">
+            <h3>🛡️ Demo: Dữ Liệu Được Bảo Vệ Thế Nào?</h3>
+            <p>Nhấn "Bắt Đầu" để xem quá trình huấn luyện Federated Learning hoạt động.</p>
+            <button class="btn-primary" id="btnPrivacyDemo">▶ Bắt Đầu Demo</button>
+            <div class="fl-animation" id="flAnimation">
+                <div class="fl-server" id="flServer">
+                    <div class="server-icon">🖥️</div>
+                    <div class="server-label">FL Server</div>
+                    <div class="server-info" id="serverInfo">Chờ model updates...</div>
+                </div>
+                <div class="fl-clients">
+                    <div class="fl-client" id="client0">
+                        <div class="client-icon">📱</div>
+                        <div class="client-label">Client 0</div>
+                        <div class="client-data">127 samples</div>
+                        <div class="client-status" id="client0Status">Idle</div>
+                        <div class="data-lock">🔒 Data stays here</div>
+                    </div>
+                    <div class="fl-client" id="client1">
+                        <div class="client-icon">💻</div>
+                        <div class="client-label">Client 1</div>
+                        <div class="client-data">100 samples</div>
+                        <div class="client-status" id="client1Status">Idle</div>
+                        <div class="data-lock">🔒 Data stays here</div>
+                    </div>
+                    <div class="fl-client" id="client2">
+                        <div class="client-icon">🖥️</div>
+                        <div class="client-label">Client 2</div>
+                        <div class="client-data">90 samples</div>
+                        <div class="client-status" id="client2Status">Idle</div>
+                        <div class="data-lock">🔒 Data stays here</div>
+                    </div>
+                </div>
+                <div class="fl-packets" id="flPackets"></div>
+            </div>
+            <div class="dp-section">
+                <h4>🔐 Differential Privacy (DP-SGD)</h4>
+                <div class="dp-controls">
+                    <label>Epsilon (ε): <input type="range" id="dpEpsilon" min="0.1" max="10" step="0.1" value="1.0">
+                    <span id="dpEpsilonVal">1.0</span></label>
+                    <p class="dp-explain" id="dpExplain">ε = 1.0 → Bảo mật cao. Nhiễu được thêm vào gradients trước khi gửi, khiến server không thể suy ra data gốc.</p>
+                </div>
+                <div class="dp-visual">
+                    <div class="dp-bar-container">
+                        <div class="dp-bar privacy-bar" id="privacyBar" style="width:90%">Privacy: 90%</div>
+                    </div>
+                    <div class="dp-bar-container">
+                        <div class="dp-bar utility-bar" id="utilityBar" style="width:75%">Utility: 75%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FedPer -->
+        <div class="fedper-card">
+            <h3>🧩 FedPer: Personalization + Privacy</h3>
+            <div class="fedper-visual">
+                <div class="layer-group shared-group">
+                    <div class="layer-title">Shared Base Layers</div>
+                    <div class="layer-desc">Đồng bộ giữa tất cả clients</div>
+                    <div class="layer shared-layer">Linear(2464 → 512) + ReLU + Dropout</div>
+                    <div class="layer shared-layer">Linear(512 → 256) + ReLU + Dropout</div>
+                    <div class="layer shared-layer">Linear(256 → 128) + ReLU + Dropout</div>
+                    <div class="sync-badge">🔄 SYNC với Server</div>
+                </div>
+                <div class="layer-separator">— Ranh giới Shared / Personal —</div>
+                <div class="layer-group personal-group">
+                    <div class="layer-title">Personal Head Layers</div>
+                    <div class="layer-desc">Giữ riêng cho mỗi client</div>
+                    <div class="layer personal-layer">Linear(128 → 64) + ReLU</div>
+                    <div class="layer personal-layer">Linear(64 → 5) [Rating 1-5]</div>
+                    <div class="lock-badge">🔒 KHÔNG GỬI — giữ local</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab: Multi-Modal -->
+    <section class="tab-content" id="tab-multimodal">
+        <h2 class="section-title">🧠 Multi-Modal Adaptive Fusion</h2>
+        <p class="section-desc">Mỗi user học trọng số riêng cho từng modality — tự động ưu tiên nguồn thông tin phù hợp nhất.</p>
+
+        <div class="fusion-demo">
+            <div class="modality-inputs">
+                <div class="modality-card text-mod">
+                    <div class="mod-header">
+                        <span class="mod-icon">📝</span>
+                        <h4>Text Embeddings</h4>
+                    </div>
+                    <div class="mod-detail">SentenceTransformer (384-dim)</div>
+                    <div class="mod-source">Reviews + Descriptions</div>
+                    <div class="mod-weight-control">
+                        <label>Weight: <span class="weight-val" id="textWeightVal">0.45</span></label>
+                        <input type="range" id="textWeight" min="0" max="100" value="45" class="mod-slider text-slider">
+                    </div>
+                </div>
+                <div class="modality-card image-mod">
+                    <div class="mod-header">
+                        <span class="mod-icon">🖼️</span>
+                        <h4>Image Features</h4>
+                    </div>
+                    <div class="mod-detail">Semantic Proxy (2048-dim)</div>
+                    <div class="mod-source">Product visual features</div>
+                    <div class="mod-weight-control">
+                        <label>Weight: <span class="weight-val" id="imageWeightVal">0.30</span></label>
+                        <input type="range" id="imageWeight" min="0" max="100" value="30" class="mod-slider image-slider">
+                    </div>
+                </div>
+                <div class="modality-card behavior-mod">
+                    <div class="mod-header">
+                        <span class="mod-icon">🛒</span>
+                        <h4>Behavior Features</h4>
+                    </div>
+                    <div class="mod-detail">User interactions (32-dim)</div>
+                    <div class="mod-source">Ratings, purchases, views</div>
+                    <div class="mod-weight-control">
+                        <label>Weight: <span class="weight-val" id="behaviorWeightVal">0.25</span></label>
+                        <input type="range" id="behaviorWeight" min="0" max="100" value="25" class="mod-slider behavior-slider">
+                    </div>
+                </div>
+            </div>
+
+            <div class="fusion-arrow">⬇️ Adaptive Fusion (Softmax)</div>
+
+            <div class="fusion-output">
+                <div class="fusion-result-card">
+                    <h4>🎯 Unified Embedding (384-dim)</h4>
+                    <canvas id="fusionChart" height="200"></canvas>
+                </div>
+                <div class="fusion-explain">
+                    <h4>💡 Tại sao Adaptive Fusion?</h4>
+                    <ul>
+                        <li><strong>User A</strong> (text_heavy): Đọc kỹ review → text weight cao</li>
+                        <li><strong>User B</strong> (image_heavy): Xem ảnh trước → image weight cao</li>
+                        <li><strong>User C</strong> (behavior_heavy): Mua theo trend → behavior weight cao</li>
+                    </ul>
+                    <p class="formula">w = Softmax(W · [h_text; h_image; h_behavior])</p>
+                    <p class="formula">output = w₁·text + w₂·image + w₃·behavior</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tab: Training Results -->
+    <section class="tab-content" id="tab-training">
+        <h2 class="section-title">📈 Kết Quả Huấn Luyện</h2>
+        <p class="section-desc">100 rounds Federated Learning trên Amazon Reviews 2023</p>
+
+        <div class="results-grid">
+            <div class="chart-card full-width">
+                <h4>Training Loss (100 Rounds)</h4>
+                <canvas id="lossChart" height="300"></canvas>
+            </div>
+            <div class="chart-card">
+                <h4>Phân Bố Data Per Client</h4>
+                <canvas id="clientChart" height="250"></canvas>
+            </div>
+            <div class="chart-card">
+                <h4>Rating Distribution</h4>
+                <canvas id="ratingChart" height="250"></canvas>
+            </div>
+        </div>
+
+        <div class="metrics-table-card">
+            <h4>📊 Metrics Summary</h4>
+            <table class="metrics-table">
+                <thead>
+                    <tr><th>Metric</th><th>Round 1</th><th>Round 50</th><th>Round 100</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Loss (distributed)</td><td>1.456</td><td>1.271</td><td>1.268</td></tr>
+                    <tr><td>Loss improvement</td><td>—</td><td>-12.7%</td><td>-12.9%</td></tr>
+                    <tr><td>Convergence</td><td>Training</td><td>Near convergent</td><td class="highlight">Converged ✅</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Tab: Architecture -->
+    <section class="tab-content" id="tab-architecture">
+        <h2 class="section-title">🏗️ Kiến Trúc Hệ Thống</h2>
+        <p class="section-desc">Tech stack và cấu trúc dự án</p>
+
+        <div class="arch-diagram">
+            <div class="arch-layer data-layer">
+                <h4>📦 Data Layer</h4>
+                <div class="arch-items">
+                    <span class="arch-item">Amazon Reviews 2023</span>
+                    <span class="arch-item">4 Categories</span>
+                    <span class="arch-item">Non-IID Split (Dirichlet)</span>
+                </div>
+            </div>
+            <div class="arch-connector">⬇</div>
+            <div class="arch-layer processing-layer">
+                <h4>⚙️ Processing Layer</h4>
+                <div class="arch-items">
+                    <span class="arch-item">SentenceTransformer (384d)</span>
+                    <span class="arch-item">Image Proxy (2048d)</span>
+                    <span class="arch-item">Behavior Features (32d)</span>
+                </div>
+            </div>
+            <div class="arch-connector">⬇</div>
+            <div class="arch-layer model-layer">
+                <h4>🧠 Model Layer</h4>
+                <div class="arch-items">
+                    <span class="arch-item">MultiModalEncoder</span>
+                    <span class="arch-item">AdaptiveFusion</span>
+                    <span class="arch-item">FedPerRecommender</span>
+                </div>
+            </div>
+            <div class="arch-connector">⬇</div>
+            <div class="arch-layer fl-layer">
+                <h4>🌐 Federated Layer</h4>
+                <div class="arch-items">
+                    <span class="arch-item">Flower Framework</span>
+                    <span class="arch-item">FedPer Strategy</span>
+                    <span class="arch-item">Opacus DP-SGD</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="tech-stack">
+            <h4>🛠️ Tech Stack</h4>
+            <div class="tech-grid">
+                <div class="tech-item"><strong>Framework</strong> PyTorch 2.1</div>
+                <div class="tech-item"><strong>FL</strong> Flower 1.7</div>
+                <div class="tech-item"><strong>Privacy</strong> Opacus</div>
+                <div class="tech-item"><strong>NLP</strong> SentenceTransformers</div>
+                <div class="tech-item"><strong>Data</strong> Amazon Reviews 2023</div>
+                <div class="tech-item"><strong>API</strong> FastAPI</div>
+            </div>
+        </div>
+
+        <div class="project-tree-card">
+            <h4>📁 Project Structure</h4>
+            <pre class="tree">
+Federated Learning/
+├── configs/
+│   ├── config.yaml                    # Main config
+│   └── config_multi_category.yaml     # Multi-category thesis config
+├── src/
+│   ├── models/
+│   │   ├── multimodal_encoder.py      # AdaptiveFusion module
+│   │   └── recommendation_model.py    # FedPerRecommender
+│   ├── federated/
+│   │   ├── client.py                  # FL client logic
+│   │   ├── server.py                  # FL server
+│   │   ├── aggregator.py             # FedAvg/FedProx
+│   │   └── privacy.py                # DP-SGD (Opacus)
+│   ├── training/
+│   │   ├── federated_training_pipeline.py  # Main training loop
+│   │   └── evaluate_federated_model.py     # Evaluation
+│   └── data_generation/
+│       ├── process_amazon_data.py          # Single-category
+│       └── process_amazon_multi_category.py # Multi-category
+├── data/
+│   └── amazon_2023_processed/         # Processed client data
+├── experiments/                       # Training results
+├── demo/                              # This demo website
+└── README.md
+            </pre>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <p>Đồ Án Tốt Nghiệp — Federated Learning for Multi-modal Recommendation System</p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

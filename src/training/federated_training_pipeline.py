@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import flwr as fl
-from flwr.common import Context
+import argparse
 from typing import Dict, List, Tuple, Optional
 import logging
 from datetime import datetime
@@ -36,10 +36,62 @@ from src.training.training_utils import (
     calculate_metrics,
     save_checkpoint,
     load_checkpoint,
-    setup_logging
+    setup_logging,
+    resolve_amazon_federated_data_dir,
+    experiments_base_dir,
 )
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _metric_series_from_flwr_history(
+    metrics_distributed: Optional[Dict],
+    metric_name: str,
+) -> Tuple[List[int], List[float]]:
+    """
+    Flower History.metrics_distributed: Dict[str, List[Tuple[int, Scalar]]],
+    ví dụ {'accuracy': [(1, 0.85), (2, 0.88), ...]}. Sau json.load, tuple thành list.
+
+    Định dạng cũ (sai): round -> {'accuracy': ...} — vẫn hỗ trợ nếu file JSON lưu theo kiểu đó.
+    """
+    if not metrics_distributed:
+        return [], []
+
+    if metric_name in metrics_distributed:
+        series = metrics_distributed[metric_name]
+        rounds: List[int] = []
+        vals: List[float] = []
+        if isinstance(series, list):
+            for item in series:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    try:
+                        rounds.append(int(item[0]))
+                        vals.append(float(item[1]))
+                    except (TypeError, ValueError):
+                        continue
+        if rounds:
+            return rounds, vals
+
+    sample = metrics_distributed.get(next(iter(metrics_distributed)))
+    if isinstance(sample, dict) and metric_name in sample:
+        rounds = []
+        vals = []
+        def _rk(k):
+            try:
+                return int(k)
+            except (TypeError, ValueError):
+                return 0
+        for k in sorted(metrics_distributed.keys(), key=_rk):
+            m = metrics_distributed[k]
+            if isinstance(m, dict) and m.get(metric_name) is not None:
+                try:
+                    rounds.append(int(k))
+                    vals.append(float(m[metric_name]))
+                except (TypeError, ValueError):
+                    continue
+        return rounds, vals
+
+    return [], []
 
 
 class FederatedTrainingPipeline:
@@ -86,9 +138,15 @@ class FederatedTrainingPipeline:
         multimodal_encoder = MultiModalEncoder(
             text_dim=model_config.get('text_embedding_dim', 384),
             image_dim=model_config.get('image_embedding_dim', 2048),
-            behavior_dim=model_config.get('behavior_embedding_dim', 32),
-            hidden_dim=model_config.get('hidden_dim', 256),
-            output_dim=384  # Output dimension for FedPerRecommender
+            behavior_dim=model_config.get(
+                'behavior_embedding_dim',
+                model_config.get('behavior_dim', 32),
+            ),
+            hidden_dim=model_config.get(
+                'hidden_dim',
+                model_config.get('multimodal_hidden_dim', 256),
+            ),
+            output_dim=model_config.get('multimodal_output_dim', 384),
         )
         
         # Step 2: Create FedPerRecommender with encoder
@@ -100,7 +158,7 @@ class FederatedTrainingPipeline:
         # Rating prediction: 5 classes (ratings 1-5, mapped to 0-4)
         num_classes = model_config.get('num_classes', 5)  # Changed from 10000 to 5
         dropout = model_config.get('dropout', 0.2)
-        
+
         model = FedPerRecommender(
             multimodal_encoder=multimodal_encoder,  # ✅ Pass encoder object
             shared_hidden_dims=shared_dims,
@@ -132,22 +190,21 @@ class FederatedTrainingPipeline:
         batch_size = self.config['training']['batch_size']
         test_split = self.config['training'].get('test_split', 0.2)
         
-        # Check for Amazon data first (preferred)
-        amazon_dir = Path("data/amazon_2023_processed")
-        synthetic_dir = Path(self.config['paths']['data_dir']) / "simulated_clients"
-        
-        if amazon_dir.exists() and (amazon_dir / "client_0" / "data.pkl").exists():
-            # Use Amazon data (REAL features!)
-            logger.info("🎉 Using AMAZON REVIEWS 2023 dataset (Real features!)")
+        amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
+        paths_cfg = self.config.get('paths') or {}
+        synthetic_dir = (project_root / paths_cfg.get('data_dir', 'data') / 'simulated_clients').resolve()
+
+        if amazon_dir is not None:
+            logger.info(f"🎉 Using AMAZON / processed pickles: {amazon_dir}")
             from src.data_generation.amazon_dataloader import get_amazon_dataloaders
-            
+
             dataloaders = get_amazon_dataloaders(
                 num_clients=num_clients,
                 data_dir=str(amazon_dir),
                 batch_size=batch_size,
-                test_split=test_split
+                test_split=test_split,
             )
-            
+
         elif synthetic_dir.exists():
             # Fallback to synthetic data
             logger.warning("⚠️  Using SYNTHETIC data (contains random noise!)")
@@ -172,14 +229,15 @@ class FederatedTrainingPipeline:
         else:
             raise FileNotFoundError(
                 f"❌ No data found!\n"
-                f"Checked:\n"
-                f"  - Amazon: {amazon_dir}\n"
+                f"Checked processed Amazon (paths.data_processed + legacy data/amazon_2023_processed), "
+                f"then synthetic:\n"
                 f"  - Synthetic: {synthetic_dir}\n\n"
-                f"To use Amazon data (RECOMMENDED):\n"
-                f"  1. PowerShell -ExecutionPolicy Bypass -File download_amazon_data.ps1\n"
-                f"  2. python src\\data_generation\\process_amazon_data.py\n\n"
-                f"Or generate synthetic data:\n"
-                f"  python src\\data_generation\\main_data_generation.py"
+                f"Multi-category preprocess:\n"
+                f"  python src/data_generation/process_amazon_multi_category.py --config configs/config_multi_category.yaml\n\n"
+                f"Hoặc single-path Amazon + synthetic fallback:\n"
+                f"  PowerShell ... download_amazon_data.ps1\n"
+                f"  python src/data_generation/process_amazon_data.py\n\n"
+                f"  python src/data_generation/main_data_generation.py"
             )
         
         if not dataloaders:
@@ -212,43 +270,25 @@ class FederatedTrainingPipeline:
             FedPerClient instance
         """
         # Extract client ID from context
-        # Support both new Context API and legacy string/int API
+        # In Flower 1.7.0, client_fn receives client ID as string/int
         cid = None
         
-        # Try new Context API first
-        if isinstance(context, Context):
-            try:
-                if hasattr(context, 'node_config') and context.node_config:
-                    if isinstance(context.node_config, dict) and 'partition-id' in context.node_config:
-                        cid = int(context.node_config['partition-id'])
-                    elif hasattr(context.node_config, 'get'):
-                        cid = int(context.node_config.get('partition-id', 0))
-            except (AttributeError, KeyError, ValueError, TypeError) as e:
-                logger.debug(f"Could not extract from context.node_config: {e}")
-        
-        # If still None, try other Context attributes
-        if cid is None and isinstance(context, Context):
-            try:
-                if hasattr(context, 'cid'):
-                    cid = int(context.cid)
-                elif hasattr(context, 'partition_id'):
-                    cid = int(context.partition_id)
-            except (AttributeError, ValueError, TypeError):
-                pass
-        
-        # Fallback: treat context as string/int (legacy support)
-        if cid is None:
-            try:
-                if isinstance(context, (str, int)):
-                    cid = int(context)
-                elif isinstance(context, dict):
-                    cid = int(context.get('cid', context.get('partition-id', 0)))
-                else:
-                    # Last resort: try to convert
-                    cid = int(str(context))
-            except (ValueError, TypeError) as e:
-                logger.error(f"Failed to extract client ID from context: {context}, type: {type(context)}, error: {e}")
-                raise ValueError(f"Cannot extract client ID from context: {context}")
+        # Try to extract client ID from context (string/int/dict)
+        try:
+            if isinstance(context, (str, int)):
+                cid = int(context)
+            elif isinstance(context, dict):
+                cid = int(context.get('cid', context.get('partition-id', 0)))
+            elif hasattr(context, 'cid'):
+                cid = int(context.cid)
+            elif hasattr(context, 'partition_id'):
+                cid = int(context.partition_id)
+            else:
+                # Last resort: try to convert
+                cid = int(str(context))
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to extract client ID from context: {context}, type: {type(context)}, error: {e}")
+            raise ValueError(f"Cannot extract client ID from context: {context}")
         
         # Ensure cid is integer
         cid = int(cid)
@@ -310,7 +350,7 @@ class FederatedTrainingPipeline:
         # Create strategy
         strategy = create_fedper_strategy(
             model=self.global_model,
-            config=self.config['federated']
+            config=self.config,
         )
 
         # Create client function
@@ -427,20 +467,20 @@ class FederatedTrainingPipeline:
         logger.info(f"✅ Saved configuration: {config_path}")
     
     def _plot_training_history(self, history, save_path: Path):
-        """Plot training history curves"""
+        """Plot training history: Loss và Accuracy theo round"""
         try:
             import matplotlib.pyplot as plt
             
             fig, axes = plt.subplots(1, 2, figsize=(12, 4))
             
-            # Plot losses
+            # === Subplot 1: Loss ===
             if history.losses_distributed:
-                rounds, losses = zip(*history.losses_distributed)
-                axes[0].plot(rounds, losses, 'b-', label='Distributed Loss')
+                rounds_loss, losses = zip(*history.losses_distributed)
+                axes[0].plot(rounds_loss, losses, 'b-o', markersize=4, label='Distributed Loss')
             
             if history.losses_centralized:
-                rounds, losses = zip(*history.losses_centralized)
-                axes[0].plot(rounds, losses, 'r-', label='Centralized Loss')
+                rounds_c, losses_c = zip(*history.losses_centralized)
+                axes[0].plot(rounds_c, losses_c, 'r--', label='Centralized Loss')
             
             axes[0].set_xlabel('Round')
             axes[0].set_ylabel('Loss')
@@ -448,23 +488,36 @@ class FederatedTrainingPipeline:
             axes[0].legend()
             axes[0].grid(True)
             
-            # Plot metrics if available
-            if history.metrics_distributed:
-                rounds = sorted(history.metrics_distributed.keys())
-                accuracies = [history.metrics_distributed[r].get('accuracy', 0) 
-                             for r in rounds if isinstance(history.metrics_distributed[r], dict)]
-                if accuracies:
-                    axes[1].plot(rounds[:len(accuracies)], accuracies, 'g-', label='Accuracy')
-            
+            # === Subplot 2: Accuracy (Flower: metrics_distributed['accuracy'] = [(round, val), ...]) ===
+            rounds_acc, vals_acc = _metric_series_from_flwr_history(
+                history.metrics_distributed,
+                'accuracy',
+            )
+            if rounds_acc and vals_acc:
+                axes[1].plot(rounds_acc, vals_acc, 'g-o', markersize=4, label='Accuracy')
+                axes[1].set_ylabel('Accuracy')
+                axes[1].legend()
+            elif history.metrics_distributed:
+                axes[1].text(
+                    0.5, 0.5,
+                    'No accuracy metrics\n(evaluation may not have run)',
+                    ha='center', va='center', transform=axes[1].transAxes, fontsize=10,
+                )
+            else:
+                axes[1].text(
+                    0.5, 0.5, 'No distributed metrics',
+                    ha='center', va='center', transform=axes[1].transAxes, fontsize=10,
+                )
+
             axes[1].set_xlabel('Round')
-            axes[1].set_ylabel('Accuracy')
-            axes[1].set_title('Training Accuracy')
-            axes[1].legend()
+            axes[1].set_title('Validation Accuracy')
             axes[1].grid(True)
+            axes[1].set_ylim(0, 1.02)
             
             plt.tight_layout()
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close()
+            logger.info("✅ Plotted Loss and Accuracy curves")
             
         except ImportError:
             logger.warning("matplotlib not available, skipping plot")
@@ -472,24 +525,41 @@ class FederatedTrainingPipeline:
             logger.warning(f"Could not create plot: {e}")
 
 
-def main():
-    """Main entry point"""
-    
-    # Load config
-    config_path = Path("configs/config.yaml")
-    
-    if not config_path.exists():
-        logger.error(f"❌ Config file not found: {config_path}")
-        logger.info("💡 Create config.yaml first or check path")
+def main(config_path: Optional[str] = None):
+    """Main entry point."""
+    cfg_arg = config_path
+    if cfg_arg is None:
+        parser = argparse.ArgumentParser(description="Federated training (FedPer)")
+        parser.add_argument(
+            "--config",
+            type=str,
+            default="configs/config.yaml",
+            help="YAML (configs/config.yaml, configs/config_multi_category.yaml, …)",
+        )
+        cfg_arg = parser.parse_args().config
+
+    resolved = Path(cfg_arg)
+    if not resolved.is_absolute():
+        resolved = (project_root / resolved).resolve()
+
+    if not resolved.exists():
+        logger.error(f"❌ Config file not found: {resolved}")
         return
-    
-    with open(config_path, 'r') as f:
+
+    with open(resolved, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    
-    # Create experiment directory
+
+    exp_block = config.get("experiment") or {}
+    thesis_block = config.get("thesis") or {}
+    exp_name = (
+        exp_block.get("name")
+        or thesis_block.get("experiment_name")
+        or "fedper_experiment"
+    )
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_name = config['experiment'].get('name', 'fedper_multimodal_v1')
-    exp_dir = Path(config['paths']['experiments_dir']) / exp_name
+    base = experiments_base_dir(config, cwd=project_root)
+    exp_dir = base / f"{exp_name}_{timestamp}"
     exp_dir.mkdir(parents=True, exist_ok=True)
     
     # Print header
@@ -497,6 +567,7 @@ def main():
     print("FEDERATED MULTI-MODAL RECOMMENDATION SYSTEM")
     print("Training Pipeline with FedPer Architecture")
     print("="*70)
+    print(f"📄 Config: {resolved}")
     print(f"📁 Experiment directory: {exp_dir}")
     print(f"🖥️  Using device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("")
@@ -520,9 +591,12 @@ def main():
             print(f"Final distributed loss: {final_loss:.4f}")
         
         if history.metrics_distributed:
-            final_metrics = history.metrics_distributed.get(-1, {})
-            if final_metrics:
-                print(f"Final metrics: {final_metrics}")
+            _, acc_series = _metric_series_from_flwr_history(history.metrics_distributed, 'accuracy')
+            _, tl_series = _metric_series_from_flwr_history(history.metrics_distributed, 'test_loss')
+            if acc_series:
+                print(f"Final validation accuracy: {acc_series[-1]:.4f}")
+            if tl_series:
+                print(f"Final validation loss: {tl_series[-1]:.4f}")
         
         print(f"\n✅ Results saved to: {exp_dir}")
         print("="*70)

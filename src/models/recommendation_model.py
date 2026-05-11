@@ -219,14 +219,14 @@ if __name__ == "__main__":
     multimodal_encoder = MultiModalEncoder()
     model = FedPerRecommender(
         multimodal_encoder=multimodal_encoder,
-        num_items=10000
+        num_classes=10000
     )
     
     # Create dummy data
     batch_size = 8
-    text_emb = torch.randn(batch_size, 384)
-    image_emb = torch.randn(batch_size, 384)
-    behavior_feat = torch.randn(batch_size, 50)
+    text_emb = torch.randn(batch_size, 384)     # SentenceTransformer output
+    image_emb = torch.randn(batch_size, 2048)    # ResNet-50 / image proxy output
+    behavior_feat = torch.randn(batch_size, 32)  # Behavior features
     
     # Forward pass
     logits, weights = model(text_emb, image_emb, behavior_feat, 

@@ -161,6 +161,8 @@ class FedPerStrategy(FedAvg):
         
         # Weighted averages
         total_examples = sum(num_examples)
+        weighted_test_loss = None
+        weighted_accuracy = None
         
         if test_losses:
             weighted_test_loss = sum(loss * n for loss, n in zip(test_losses, num_examples)) / total_examples
@@ -169,10 +171,23 @@ class FedPerStrategy(FedAvg):
         if accuracies:
             weighted_accuracy = sum(acc * n for acc, n in zip(accuracies, num_examples)) / total_examples
             self.metrics_history['accuracy'].append(weighted_accuracy)
-            
-            print(f"[Server] Round {server_round} - Avg Test Loss: {weighted_test_loss:.4f}, Avg Accuracy: {weighted_accuracy:.4f}")
+            _loss_str = f"{weighted_test_loss:.4f}" if weighted_test_loss is not None else "N/A"
+            print(f"[Server] Round {server_round} - Avg Test Loss: {_loss_str}, Avg Accuracy: {weighted_accuracy:.4f}")
         
-        return aggregated_loss, aggregated_metrics
+        # Quan trọng: Trả metrics về Flower History để log và vẽ biểu đồ accuracy
+        out_metrics = dict(aggregated_metrics) if aggregated_metrics else {}
+        if weighted_test_loss is not None:
+            out_metrics['test_loss'] = float(weighted_test_loss)
+        if weighted_accuracy is not None:
+            out_metrics['accuracy'] = float(weighted_accuracy)
+        
+        # Flower chỉ ghi history khi loss_fed is not None; đảm bảo có loss (trung bình client)
+        if aggregated_loss is None and results:
+            losses = [float(evaluate_res.loss) for _, evaluate_res in results if evaluate_res.loss is not None]
+            if losses:
+                aggregated_loss = float(sum(losses) / len(losses))
+        
+        return aggregated_loss, out_metrics
 
 
 def get_initial_parameters(model: nn.Module) -> Parameters:
@@ -194,39 +209,49 @@ def get_initial_parameters(model: nn.Module) -> Parameters:
     return fl.common.ndarrays_to_parameters(param_arrays)
 
 
-def get_on_fit_config_fn(config: Dict):
+def _normalize_fl_root_config(config: Dict) -> Tuple[Dict, Dict]:
     """
-    Tạo config function cho training
-    
-    Returns:
-        Function that returns config dict cho mỗi training round
+    Chuẩn hoá config truyền vào Flower strategy.
+    - Có khóa 'federated': dùng full root để callbacks đọc training.*
+    - Chỉ có dict tham số FL (legacy): coi là federated-only.
     """
+    if config is not None and "federated" in config:
+        return config["federated"], config
+    return config, {"federated": config, "training": {}}
+
+
+def get_on_fit_config_fn(full_config: Dict):
+    """
+    Tạo config function cho training — ưu tiên training.local_epochs / batch_size / learning_rate.
+    """
+    train = full_config.get("training", {}) or {}
+    fed = full_config.get("federated", {}) or {}
+
     def fit_config(server_round: int):
         """Config cho training round"""
         return {
             "server_round": server_round,
-            "local_epochs": config.get('local_epochs', 3),
-            "batch_size": config.get('batch_size', 32),
-            "learning_rate": config.get('learning_rate', 0.001)
+            "local_epochs": train.get("local_epochs", fed.get("local_epochs", 3)),
+            "batch_size": train.get("batch_size", fed.get("batch_size", 32)),
+            "learning_rate": train.get("learning_rate", fed.get("learning_rate", 0.001)),
         }
-    
+
     return fit_config
 
 
-def get_on_evaluate_config_fn(config: Dict):
+def get_on_evaluate_config_fn(full_config: Dict):
     """
-    Tạo config function cho evaluation
-    
-    Returns:
-        Function that returns config dict cho mỗi evaluation round
+    Config cho evaluate — batch_size từ training.
     """
+    train = full_config.get("training", {}) or {}
+
     def evaluate_config(server_round: int):
         """Config cho evaluation round"""
         return {
             "server_round": server_round,
-            "batch_size": config.get('batch_size', 32)
+            "batch_size": train.get("batch_size", 32),
         }
-    
+
     return evaluate_config
 
 
@@ -236,24 +261,25 @@ def create_fedper_strategy(model: nn.Module, config: Dict) -> FedPerStrategy:
     
     Args:
         model: Initial model
-        config: Configuration dict
+        config: Full YAML root (khuyến nghị) hoặc dict chỉ chứa tham số federated (legacy).
         
     Returns:
         FedPerStrategy instance
     """
     initial_parameters = get_initial_parameters(model)
-    
+    fed_cfg, full_root = _normalize_fl_root_config(config)
+
     strategy = FedPerStrategy(
-        fraction_fit=config.get('fraction_fit', 0.6),
-        fraction_evaluate=config.get('fraction_evaluate', 0.5),
-        min_fit_clients=config.get('min_fit_clients', 3),
-        min_evaluate_clients=config.get('min_evaluate_clients', 2),
-        min_available_clients=config.get('min_available_clients', 5),
+        fraction_fit=fed_cfg.get("fraction_fit", 0.6),
+        fraction_evaluate=fed_cfg.get("fraction_evaluate", 0.5),
+        min_fit_clients=fed_cfg.get("min_fit_clients", 3),
+        min_evaluate_clients=fed_cfg.get("min_evaluate_clients", 2),
+        min_available_clients=fed_cfg.get("min_available_clients", 5),
         initial_parameters=initial_parameters,
-        on_fit_config_fn=get_on_fit_config_fn(config),
-        on_evaluate_config_fn=get_on_evaluate_config_fn(config)
+        on_fit_config_fn=get_on_fit_config_fn(full_root),
+        on_evaluate_config_fn=get_on_evaluate_config_fn(full_root),
     )
-    
+
     return strategy
 
 
@@ -272,12 +298,13 @@ def start_server(model: nn.Module,
     """
     # Create strategy
     strategy = create_fedper_strategy(model, config)
-    
+    fed_cfg, _ = _normalize_fl_root_config(config)
+
     print(f"Starting Federated Learning Server...")
     print(f"Server address: {server_address}")
     print(f"Number of rounds: {num_rounds}")
-    print(f"Fraction fit: {config.get('fraction_fit', 0.6)}")
-    print(f"Min fit clients: {config.get('min_fit_clients', 5)}")
+    print(f"Fraction fit: {fed_cfg.get('fraction_fit', 0.6)}")
+    print(f"Min fit clients: {fed_cfg.get('min_fit_clients', 5)}")
     
     # Start server
     fl.server.start_server(

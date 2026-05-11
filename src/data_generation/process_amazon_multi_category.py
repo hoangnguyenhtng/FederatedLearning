@@ -62,8 +62,12 @@ class MultiCategoryAmazonProcessor:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Processing settings
-        self.chunk_size = self.config['processing']['chunk_size']
-        self.checkpoint_interval = self.config['processing']['checkpoint_interval']
+        _proc = self.config['processing']
+        self.chunk_size = _proc['chunk_size']
+        self.checkpoint_interval = _proc['checkpoint_interval']
+        self.min_review_length = int(_proc.get('min_review_length', 10))
+        # Mặc định False để không đổi hành vi nếu config cũ không có khóa này
+        self.remove_duplicates = bool(_proc.get('remove_duplicates', False))
         
         # THESIS-OPTIMIZED: Support both global and per-category sampling
         self.max_samples_per_category = self.config['data_generation'].get('max_samples_per_category')
@@ -105,9 +109,20 @@ class MultiCategoryAmazonProcessor:
                 print(f"   Falling back to dummy features")
                 self.skip_image_download = True
         else:
-            print("   ⚠️  Skipping real image processing (using dummy features)")
+            print("   📦 Using text-derived image proxy (semantic projection)")
+            # Create deterministic projection matrix for 384→2048 expansion
+            rng = np.random.RandomState(42)
+            self._image_projection_matrix = rng.randn(384, 2048).astype(np.float32) * 0.05
         
         print("✅ Initialization complete!\n")
+        print(
+            f"   Data filters: min_review_length={self.min_review_length} chars (title+text), "
+            f"remove_duplicates={self.remove_duplicates}\n"
+        )
+    
+    @staticmethod
+    def _combined_review_length(review: Dict) -> int:
+        return len(f"{review.get('title', '')} {review.get('text', '')}".strip())
     
     def get_max_samples_for_category(self, category: str) -> int:
         """Get max samples to process for a specific category"""
@@ -193,10 +208,12 @@ class MultiCategoryAmazonProcessor:
                 np.random.seed(seed)
                 image_embedding = np.random.randn(2048).astype(np.float32) * 0.1
         else:
-            # Deterministic dummy based on item_id
-            seed = hash(review['parent_asin']) % 10000
-            np.random.seed(seed)
-            image_embedding = np.random.randn(2048).astype(np.float32) * 0.1
+            # Text-derived image proxy: encode product info → project to 2048-dim
+            # This carries semantic meaning (unlike random noise) while being deterministic
+            proxy_text = f"{review.get('title', '')} {item_meta.get('title', '')} {category} product visual"
+            proxy_text = proxy_text.strip()[:128]
+            proxy_emb = self.text_encoder.encode(proxy_text, convert_to_tensor=False)  # 384-dim
+            image_embedding = (proxy_emb @ self._image_projection_matrix).astype(np.float32)  # 2048-dim
         
         # 3. BEHAVIOR FEATURES (32-dim)
         behavior_features = np.zeros(32, dtype=np.float32)
@@ -299,19 +316,33 @@ class MultiCategoryAmazonProcessor:
         # Process samples
         print(f"\n🔄 Processing samples...")
         processed_data = []
+        seen_keys = set()
+        skipped = {"no_meta": 0, "too_short": 0, "duplicate": 0, "encode_error": 0}
         
         for review in tqdm(reviews, desc=f"   {category}"):
             parent_asin = review.get('parent_asin')
             if not parent_asin or parent_asin not in meta_dict:
+                skipped["no_meta"] += 1
                 continue
+            
+            if self._combined_review_length(review) < self.min_review_length:
+                skipped["too_short"] += 1
+                continue
+            
+            dedupe_key = (review.get("user_id"), parent_asin, review.get("timestamp", 0))
+            if self.remove_duplicates and dedupe_key in seen_keys:
+                skipped["duplicate"] += 1
+                continue
+            if self.remove_duplicates:
+                seen_keys.add(dedupe_key)
             
             item_meta = meta_dict[parent_asin]
             
             try:
                 sample = self.process_single_sample(review, item_meta, category)
                 processed_data.append(sample)
-            except Exception as e:
-                # Skip problematic samples
+            except Exception:
+                skipped["encode_error"] += 1
                 continue
             
             # Checkpoint saving
@@ -319,6 +350,10 @@ class MultiCategoryAmazonProcessor:
                 self._save_checkpoint(category, processed_data)
         
         print(f"\n✅ Processed {len(processed_data):,} samples for {category}")
+        print(
+            f"   Skipped: no_meta={skipped['no_meta']:,}, too_short(<{self.min_review_length})={skipped['too_short']:,}, "
+            f"duplicate={skipped['duplicate']:,}, encode_error={skipped['encode_error']:,}"
+        )
         
         return pd.DataFrame(processed_data)
     

@@ -79,8 +79,11 @@ class AmazonDataProcessor:
                 print(f"   Falling back to dummy image features")
                 self.skip_image_download = True
         else:
-            print("⚠️  Skipping image download (using deterministic dummy features)")
-            print("   This is OK for testing! Real images would be better but not required.")
+            print("📦 Using text-derived image proxy (semantic projection)")
+            print("   Image features are derived from product text → projected to 2048-dim")
+            # Create deterministic projection matrix for 384→2048 expansion
+            rng = np.random.RandomState(42)
+            self._image_projection_matrix = rng.randn(384, 2048).astype(np.float32) * 0.05
         
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"✅ Initialized processors on device: {self.device}")
@@ -198,11 +201,12 @@ class AmazonDataProcessor:
                 if image_embedding is None:
                     image_embedding = np.random.randn(2048).astype(np.float32)
             else:
-                # Use deterministic dummy features based on item_id (not random!)
-                # This ensures same item always gets same features
-                seed = hash(parent_asin) % 10000
-                np.random.seed(seed)
-                image_embedding = np.random.randn(2048).astype(np.float32) * 0.1  # Small values
+                # Text-derived image proxy: encode product info → project to 2048-dim
+                # This carries semantic meaning (unlike random noise) while being deterministic
+                proxy_text = f"{review.get('title', '')} {item_meta.get('title', '')} product visual"
+                proxy_text = proxy_text.strip()[:128]
+                proxy_emb = self.text_encoder.encode(proxy_text, convert_to_tensor=False)  # 384-dim
+                image_embedding = (proxy_emb @ self._image_projection_matrix).astype(np.float32)  # 2048-dim
             
             # 3. BEHAVIOR FEATURES (32-dim)
             behavior_features = np.zeros(32, dtype=np.float32)
