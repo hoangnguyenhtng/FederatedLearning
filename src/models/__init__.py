@@ -13,13 +13,22 @@ from .recommendation_model import (
     PersonalHead,
     FedPerRecommender
 )
-from .attention_mechanism import (
-    CrossAttentionModule,
-    SelfAttentionModule,
-    MultiHeadAttention,
-    AdaptiveAttentionFusion,
-    ModalityGatingMechanism
-)
+
+# attention_mechanism is optional (may not exist)
+try:
+    from .attention_mechanism import (
+        CrossAttentionModule,
+        SelfAttentionModule,
+        MultiHeadAttention,
+        AdaptiveAttentionFusion,
+        ModalityGatingMechanism
+    )
+except ImportError:
+    CrossAttentionModule = None
+    SelfAttentionModule = None
+    MultiHeadAttention = None
+    AdaptiveAttentionFusion = None
+    ModalityGatingMechanism = None
 
 __all__ = [
     # Encoders
@@ -32,7 +41,7 @@ __all__ = [
     'PersonalHead',
     'FedPerRecommender',
     
-    # Attention
+    # Attention (optional)
     'CrossAttentionModule',
     'SelfAttentionModule',
     'MultiHeadAttention',

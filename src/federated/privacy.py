@@ -20,6 +20,13 @@ try:
     OPACUS_AVAILABLE = True
 except ImportError:
     OPACUS_AVAILABLE = False
+    # Define dummy PrivacyEngine so type hints don't crash at module scope
+    class PrivacyEngine:
+        """Dummy placeholder when Opacus is not installed."""
+        pass
+    class ModuleValidator:
+        @staticmethod
+        def fix(model): return model
     logging.warning("Opacus not available. Differential privacy will be disabled.")
 
 logger = logging.getLogger(__name__)

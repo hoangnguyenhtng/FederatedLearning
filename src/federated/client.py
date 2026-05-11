@@ -482,23 +482,23 @@ if __name__ == "__main__":
     multimodal_encoder = MultiModalEncoder()
     model = FedPerRecommender(
         multimodal_encoder=multimodal_encoder,
-        num_items=1000
+        num_classes=5  # Rating prediction: 5 classes (1-5 → 0-4)
     )
     
     # Create dummy data
     num_samples = 100
     train_data = {
         'text_embeddings': torch.randn(num_samples, 384),
-        'image_embeddings': torch.randn(num_samples, 384),
-        'behavior_features': torch.randn(num_samples, 50),
-        'labels': torch.randint(0, 1000, (num_samples,))
+        'image_embeddings': torch.randn(num_samples, 2048),  # ✅ ResNet-50 output dim
+        'behavior_features': torch.randn(num_samples, 32),   # ✅ 32-dim behavior
+        'labels': torch.randint(0, 5, (num_samples,))        # ✅ Rating 0-4
     }
     
     test_data = {
         'text_embeddings': torch.randn(20, 384),
-        'image_embeddings': torch.randn(20, 384),
-        'behavior_features': torch.randn(20, 50),
-        'labels': torch.randint(0, 1000, (20,))
+        'image_embeddings': torch.randn(20, 2048),
+        'behavior_features': torch.randn(20, 32),
+        'labels': torch.randint(0, 5, (20,))
     }
     
     config = {

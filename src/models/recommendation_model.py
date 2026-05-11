@@ -219,7 +219,7 @@ if __name__ == "__main__":
     multimodal_encoder = MultiModalEncoder()
     model = FedPerRecommender(
         multimodal_encoder=multimodal_encoder,
-        num_classes=10000
+        num_classes=5  # Rating prediction: 5 classes (1-5 → 0-4)
     )
     
     # Create dummy data

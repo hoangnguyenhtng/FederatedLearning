@@ -247,16 +247,32 @@ async def startup_event():
             hidden_dim=model_cfg.get("hidden_dim", 256),
             output_dim=384,
         )
+        # ✅ num_classes MUST match training config (5 = rating 1-5 → 0-4)
+        # NOT len(items_df) — that would create a mismatch when loading checkpoint
         model = FedPerRecommender(
             multimodal_encoder=multimodal_encoder,
-            num_items=len(items_df)
+            num_classes=model_cfg.get("num_classes", 5),
         )
         model.to(device)
         model.eval()
         
-        # TODO: Load trained weights
-        # checkpoint = torch.load("experiments/.../global_model_final.pt")
-        # model.load_state_dict(checkpoint['model_state_dict'])
+        # Load trained weights if checkpoint exists
+        ckpt_candidates = sorted(
+            project_root.glob("experiments/**/models/global_model_final.pt"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if ckpt_candidates:
+            ckpt_path = ckpt_candidates[0]
+            try:
+                checkpoint = torch.load(str(ckpt_path), map_location=device)
+                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                logger.info(f"✅ Loaded checkpoint: {ckpt_path}")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not load checkpoint {ckpt_path}: {e}")
+                logger.info("   Using random-initialized model for demo")
+        else:
+            logger.warning("⚠️  No checkpoint found — using random-initialized model for demo")
         
         logger.info("✅ Model loaded")
         
@@ -374,11 +390,11 @@ async def get_recommendations(request: RecommendationRequest):
         response = RecommendationResponse(
             user_id=request.user_id,
             recommendations=recommendations,
-            user_preference_type=str(user_row.get("preference_type", "amazon_user")),
+            user_preference_type=str(user.get("preference_type", "amazon_user") if hasattr(user, 'get') else "amazon_user"),
             fusion_weights={
-                "text": float(fw[0].item()),
-                "image": float(fw[1].item()),
-                "behavior": float(fw[2].item()),
+                "text": float(fusion_weights[0, 0].item()),
+                "image": float(fusion_weights[0, 1].item()),
+                "behavior": float(fusion_weights[0, 2].item()),
             },
             timestamp=datetime.now().isoformat(),
             processing_time_ms=processing_time

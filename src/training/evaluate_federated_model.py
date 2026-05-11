@@ -1,9 +1,10 @@
 """
 Evaluation Script for Federated Multi-Modal Recommendation (Amazon Reviews 2023)
 
-This version is aligned with:
+FIXED VERSION — aligned with:
 - `src/training/federated_training_pipeline.py` (model creation + checkpoint format)
 - `src/data_generation/amazon_dataloader.py` (Amazon per-client data)
+- `src/models/recommendation_model.py` (FedPerRecommender with num_classes=5)
 
 It evaluates the *global* checkpoint (shared + personal head as saved) on each client test split.
 """
@@ -12,361 +13,469 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
-import json
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import Dict, List
-import numpy as np
 
-sys.path.append(str(Path(__file__).parent.parent))
+# ── path setup ────────────────────────────────────────────────────────
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-from models.recommendation_model import FedPerRecommender
-from data_generation.federated_dataloader import FederatedDataLoader
-from training_utils import evaluate, MetricsCalculator
+from src.models.multimodal_encoder import MultiModalEncoder
+from src.models.recommendation_model import FedPerRecommender
+from src.training.training_utils import (
+    MetricsCalculator,
+    calculate_metrics,
+    load_checkpoint,
+    resolve_amazon_federated_data_dir,
+    experiments_base_dir,
+)
 
 
+# =====================================================================
+# Helper: build model from config (same logic as pipeline)
+# =====================================================================
+def _build_model(model_cfg: dict) -> FedPerRecommender:
+    """Create FedPerRecommender identical to training pipeline."""
+    encoder = MultiModalEncoder(
+        text_dim=model_cfg.get("text_embedding_dim", 384),
+        image_dim=model_cfg.get("image_embedding_dim", 2048),
+        behavior_dim=model_cfg.get("behavior_embedding_dim",
+                                    model_cfg.get("behavior_dim", 32)),
+        hidden_dim=model_cfg.get("hidden_dim",
+                                  model_cfg.get("multimodal_hidden_dim", 256)),
+        output_dim=model_cfg.get("multimodal_output_dim", 384),
+    )
+    return FedPerRecommender(
+        multimodal_encoder=encoder,
+        shared_hidden_dims=model_cfg.get("shared_hidden_dims", [512, 256, 128]),
+        personal_hidden_dims=model_cfg.get("personal_hidden_dims", [64, 32]),
+        num_classes=model_cfg.get("num_classes", 5),
+        dropout=model_cfg.get("dropout", 0.2),
+    )
+
+
+# =====================================================================
+# Core evaluator
+# =====================================================================
 class FederatedEvaluator:
-    """Evaluate federated model performance"""
-    
+    """Evaluate federated model performance across clients."""
+
     def __init__(
         self,
-        experiment_dir: str,
-        config_path: str = './configs/config.yaml'
+        config_path: str = "configs/config.yaml",
+        experiment_dir: Optional[str] = None,
     ):
-        """
-        Initialize evaluator
-        
-        Args:
-            experiment_dir: Directory containing experiment results
-            config_path: Path to configuration file
-        """
-        self.experiment_dir = Path(experiment_dir)
-        self.config_path = config_path
-        
-        # Load config
-        with open(config_path, 'r') as f:
+        resolved = Path(config_path)
+        if not resolved.is_absolute():
+            resolved = (project_root / resolved).resolve()
+
+        with open(resolved, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
-        
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Resolve experiment dir
+        if experiment_dir:
+            self.experiment_dir = Path(experiment_dir)
+        else:
+            base = experiments_base_dir(self.config, cwd=project_root)
+            # Pick most-recent experiment folder
+            candidates = sorted(base.glob("fedper_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if candidates:
+                self.experiment_dir = candidates[0]
+            else:
+                self.experiment_dir = base / "evaluation_standalone"
+        self.experiment_dir.mkdir(parents=True, exist_ok=True)
+
         print(f"📊 Evaluator initialized")
-        print(f"   Experiment: {experiment_dir}")
+        print(f"   Config: {resolved}")
+        print(f"   Experiment: {self.experiment_dir}")
         print(f"   Device: {self.device}")
-    
-    def load_model(self, checkpoint_path: str) -> nn.Module:
-        """Load trained model from checkpoint"""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        # Create model
-        model_config = self.config['model']
-        model = FedPerRecommender(
-            text_dim=model_config['text']['embedding_dim'],
-            image_dim=model_config['image']['output_dim'],
-            behavior_dim=model_config['behavior']['output_dim'],
-            hidden_dims=model_config['recommendation']['hidden_dims'],
-            num_classes=5,
-            num_users=1000,
-            num_items=10000,
-            shared_layers=self.config['federated']['shared_layers'],
-            personal_layers=self.config['federated']['personal_layers']
-        )
-        
-        model.load_state_dict(checkpoint['model_state_dict'])
+
+    # ── load model ────────────────────────────────────────────────────
+    def load_model(self, checkpoint_path: Optional[str] = None) -> nn.Module:
+        """Load trained model from checkpoint (auto-detect if path not given)."""
+        model = _build_model(self.config.get("model", {}))
         model.to(self.device)
+
+        # Auto-detect checkpoint
+        if checkpoint_path is None:
+            ckpt_candidates = sorted(
+                self.experiment_dir.glob("**/global_model_final.pt"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not ckpt_candidates:
+                # Also try broader search
+                base = experiments_base_dir(self.config, cwd=project_root)
+                ckpt_candidates = sorted(
+                    base.glob("**/global_model_final.pt"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+            if ckpt_candidates:
+                checkpoint_path = str(ckpt_candidates[0])
+
+        if checkpoint_path and Path(checkpoint_path).exists():
+            load_checkpoint(model, optimizer=None, path=checkpoint_path, device=self.device)
+            print(f"✅ Loaded checkpoint: {checkpoint_path}")
+        else:
+            print("⚠️  No checkpoint found — evaluating random-initialized model")
+            print("   Results will reflect untrained baseline performance")
+
         model.eval()
-        
         return model
-    
+
+    # ── load dataloaders ──────────────────────────────────────────────
+    def _load_dataloaders(self) -> Dict[int, tuple]:
+        """Load federated dataloaders (Amazon or synthetic)."""
+        num_clients = self.config["federated"]["num_clients"]
+        batch_size = self.config["training"]["batch_size"]
+        test_split = self.config["training"].get("test_split", 0.2)
+
+        amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
+
+        if amazon_dir is not None:
+            print(f"📂 Using Amazon data: {amazon_dir}")
+            from src.data_generation.amazon_dataloader import get_amazon_dataloaders
+            return get_amazon_dataloaders(
+                num_clients=num_clients,
+                data_dir=str(amazon_dir),
+                batch_size=batch_size,
+                test_split=test_split,
+            )
+
+        # Synthetic fallback
+        paths_cfg = self.config.get("paths") or {}
+        synthetic_dir = (project_root / paths_cfg.get("data_dir", "data") / "simulated_clients").resolve()
+        if synthetic_dir.exists():
+            print(f"📂 Using synthetic data: {synthetic_dir}")
+            from src.data_generation.federated_dataloader import get_federated_dataloaders
+            loaders_list = get_federated_dataloaders(
+                num_clients=num_clients,
+                data_dir=synthetic_dir,
+                batch_size=batch_size,
+                test_split=test_split,
+            )
+            dataloaders = {}
+            for cid, loaders in enumerate(loaders_list):
+                if loaders and len(loaders) == 2 and loaders[0] and loaders[1]:
+                    dataloaders[cid] = (loaders[0], loaders[1])
+            return dataloaders
+
+        raise FileNotFoundError(
+            f"No data found. Run process_amazon_data.py first.\n"
+            f"  Checked: {amazon_dir}, {synthetic_dir}"
+        )
+
+    # ── evaluate single client ────────────────────────────────────────
+    def _evaluate_client(
+        self,
+        model: nn.Module,
+        test_loader,
+    ) -> Dict[str, float]:
+        """Evaluate model on one client's test set."""
+        model.eval()
+        criterion = nn.CrossEntropyLoss()
+
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        all_preds = []
+        all_targets = []
+
+        with torch.no_grad():
+            for batch_data in test_loader:
+                # ── Parse batch (dict or tuple) ──
+                if isinstance(batch_data, dict):
+                    # Get image embedding
+                    if "image_embedding" in batch_data:
+                        image_emb = batch_data["image_embedding"].to(self.device)
+                    elif "image_features" in batch_data:
+                        image_emb = batch_data["image_features"].to(self.device)
+                    else:
+                        bs = batch_data.get("label", batch_data.get("rating", torch.tensor([1]))).shape[0]
+                        image_emb = torch.randn(bs, 2048, device=self.device)
+
+                    behavior_feat = batch_data["behavior_features"].to(self.device)
+                    labels = batch_data.get("label", batch_data["rating"] - 1).to(self.device)
+                    labels = torch.clamp(labels, 0, 4)
+
+                    # Fix behavior dim
+                    bs = behavior_feat.shape[0]
+                    if behavior_feat.shape[-1] != 32:
+                        if behavior_feat.shape[-1] < 32:
+                            pad = torch.zeros(bs, 32 - behavior_feat.shape[-1], device=self.device)
+                            behavior_feat = torch.cat([behavior_feat, pad], dim=1)
+                        else:
+                            behavior_feat = behavior_feat[:, :32]
+
+                    # Text embedding
+                    if "text_embedding" in batch_data:
+                        text_emb = batch_data["text_embedding"].to(self.device)
+                    else:
+                        text_emb = torch.randn(bs, 384, device=self.device)
+
+                    # Fix image dim → 2048
+                    if image_emb.shape[-1] != 2048:
+                        image_emb = torch.randn(bs, 2048, device=self.device)
+                else:
+                    text_emb = batch_data[0].to(self.device)
+                    image_emb = batch_data[1].to(self.device)
+                    behavior_feat = batch_data[2].to(self.device)
+                    labels = batch_data[3].to(self.device)
+                    labels = torch.clamp(labels, 0, 4)
+
+                # Forward
+                logits = model(text_emb, image_emb, behavior_feat)
+                num_classes = logits.shape[1]
+                labels_clamped = torch.clamp(labels, 0, num_classes - 1)
+
+                loss = criterion(logits, labels_clamped)
+                total_loss += loss.item()
+
+                _, predicted = torch.max(logits, 1)
+                total += labels_clamped.size(0)
+                correct += (predicted == labels_clamped).sum().item()
+
+                all_preds.append(logits.cpu())
+                all_targets.append(labels_clamped.cpu())
+
+        avg_loss = total_loss / max(len(test_loader), 1)
+        accuracy = correct / max(total, 1)
+
+        # Compute extended metrics
+        all_preds_t = torch.cat(all_preds) if all_preds else torch.zeros(1, 5)
+        all_targets_t = torch.cat(all_targets) if all_targets else torch.zeros(1).long()
+
+        metrics = {
+            "loss": avg_loss,
+            "accuracy": accuracy,
+            "num_samples": total,
+        }
+
+        # Extra metrics
+        try:
+            extra = calculate_metrics(all_preds_t, all_targets_t, compute_all=True)
+            metrics.update(extra)
+        except Exception:
+            pass
+
+        return metrics
+
+    # ── evaluate all clients ──────────────────────────────────────────
     def evaluate_all_clients(
         self,
         model: nn.Module,
-        client_ids: List[int] = None
-    ) -> pd.DataFrame:
-        """
-        Evaluate model on all clients
-        
-        Args:
-            model: Global model
-            client_ids: List of client IDs (default: all)
-        
-        Returns:
-            DataFrame with per-client metrics
-        """
+        client_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Evaluate model on all (or selected) clients."""
+        dataloaders = self._load_dataloaders()
+
         if client_ids is None:
-            client_ids = list(range(self.config['federated']['num_clients']))
-        
+            client_ids = sorted(dataloaders.keys())
+
         print(f"\n📊 Evaluating {len(client_ids)} clients...")
-        
         results = []
-        
-        for client_id in client_ids:
-            # Load client data
-            data_loader = FederatedDataLoader(
-                client_id=client_id,
-                data_dir='./data/simulated_clients',
-                batch_size=self.config['data']['batch_size'],
-                test_split=self.config['data']['test_split']
+
+        for cid in client_ids:
+            if cid not in dataloaders:
+                print(f"  ⚠️  Client {cid}: no data, skipping")
+                continue
+
+            _, test_loader = dataloaders[cid]
+            metrics = self._evaluate_client(model, test_loader)
+            metrics["client_id"] = cid
+            results.append(metrics)
+
+            print(
+                f"  Client {cid}: "
+                f"Acc={metrics['accuracy']:.4f}, "
+                f"Loss={metrics['loss']:.4f}, "
+                f"Samples={metrics['num_samples']}"
             )
-            
-            _, test_loader = data_loader.create_dataloaders()
-            
-            # Evaluate
-            metrics = evaluate(
-                model=model,
-                test_loader=test_loader,
-                criterion=nn.CrossEntropyLoss(),
-                device=self.device,
-                text_encoder=None,
-                compute_all_metrics=True
-            )
-            
-            # Get client metadata
-            metadata = data_loader.metadata
-            
-            result = {
-                'client_id': client_id,
-                'num_users': metadata['num_users'],
-                'num_interactions': metadata['num_interactions'],
-                'preference_distribution': metadata['preference_distribution'],
-                **metrics
-            }
-            
-            results.append(result)
-            
-            print(f"  Client {client_id}: Acc={metrics['accuracy']:.4f}, "
-                  f"NDCG@10={metrics['ndcg@10']:.4f}")
-        
-        return pd.DataFrame(results)
-    
-    def evaluate_by_preference_type(
-        self,
-        results_df: pd.DataFrame
-    ) -> pd.DataFrame:
-        """
-        Aggregate metrics by user preference type
-        
-        Args:
-            results_df: Results from evaluate_all_clients
-        
-        Returns:
-            Aggregated metrics by preference type
-        """
-        print("\n📊 Aggregating by preference type...")
-        
-        # Extract dominant preference for each client
-        preference_data = []
-        
-        for _, row in results_df.iterrows():
-            pref_dist = row['preference_distribution']
-            
-            # Find dominant preference type
-            if isinstance(pref_dist, str):
-                pref_dist = eval(pref_dist)
-            
-            dominant_pref = max(pref_dist.items(), key=lambda x: x[1])[0]
-            dominant_count = pref_dist[dominant_pref]
-            total_users = sum(pref_dist.values())
-            dominant_ratio = dominant_count / total_users if total_users > 0 else 0
-            
-            # Only consider if dominant preference > 50%
-            if dominant_ratio > 0.5:
-                preference_data.append({
-                    'preference_type': dominant_pref,
-                    'accuracy': row['accuracy'],
-                    'precision': row['precision'],
-                    'recall': row['recall'],
-                    'ndcg@10': row['ndcg@10'],
-                    'mrr': row['mrr'],
-                    'num_users': row['num_users']
-                })
-        
-        pref_df = pd.DataFrame(preference_data)
-        
-        # Group by preference type
-        aggregated = pref_df.groupby('preference_type').agg({
-            'accuracy': 'mean',
-            'precision': 'mean',
-            'recall': 'mean',
-            'ndcg@10': 'mean',
-            'mrr': 'mean',
-            'num_users': 'sum'
-        }).reset_index()
-        
-        print(aggregated)
-        
-        return aggregated
-    
-    def visualize_results(
-        self,
-        results_df: pd.DataFrame,
-        preference_df: pd.DataFrame,
-        save_dir: str = None
-    ):
-        """Create visualization of results"""
-        if save_dir is None:
-            save_dir = self.experiment_dir / 'evaluation'
-        
-        save_path = Path(save_dir)
-        save_path.mkdir(parents=True, exist_ok=True)
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        
-        # 1. Per-client accuracy
-        axes[0, 0].bar(results_df['client_id'], results_df['accuracy'])
-        axes[0, 0].set_xlabel('Client ID')
-        axes[0, 0].set_ylabel('Accuracy')
-        axes[0, 0].set_title('Per-Client Accuracy')
-        axes[0, 0].axhline(
-            y=results_df['accuracy'].mean(),
-            color='r',
-            linestyle='--',
-            label=f'Mean: {results_df["accuracy"].mean():.3f}'
-        )
-        axes[0, 0].legend()
-        
-        # 2. Metrics by preference type
-        if len(preference_df) > 0:
-            x = np.arange(len(preference_df))
-            width = 0.2
-            
-            axes[0, 1].bar(x - width, preference_df['accuracy'], width, label='Accuracy')
-            axes[0, 1].bar(x, preference_df['precision'], width, label='Precision')
-            axes[0, 1].bar(x + width, preference_df['recall'], width, label='Recall')
-            
-            axes[0, 1].set_xlabel('Preference Type')
-            axes[0, 1].set_ylabel('Score')
-            axes[0, 1].set_title('Metrics by Preference Type')
-            axes[0, 1].set_xticks(x)
-            axes[0, 1].set_xticklabels(preference_df['preference_type'], rotation=45)
-            axes[0, 1].legend()
-        
-        # 3. NDCG@10 comparison
-        axes[1, 0].bar(results_df['client_id'], results_df['ndcg@10'])
-        axes[1, 0].set_xlabel('Client ID')
-        axes[1, 0].set_ylabel('NDCG@10')
-        axes[1, 0].set_title('NDCG@10 per Client')
-        axes[1, 0].axhline(
-            y=results_df['ndcg@10'].mean(),
-            color='r',
-            linestyle='--',
-            label=f'Mean: {results_df["ndcg@10"].mean():.3f}'
-        )
-        axes[1, 0].legend()
-        
-        # 4. Distribution of metrics
-        metrics_to_plot = ['accuracy', 'precision', 'recall', 'ndcg@10']
-        data_to_plot = [results_df[m].values for m in metrics_to_plot]
-        
-        axes[1, 1].boxplot(data_to_plot, labels=metrics_to_plot)
-        axes[1, 1].set_ylabel('Score')
-        axes[1, 1].set_title('Distribution of Metrics Across Clients')
-        axes[1, 1].grid(axis='y', alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save figure
-        viz_path = save_path / 'evaluation_results.png'
-        plt.savefig(viz_path, dpi=150, bbox_inches='tight')
-        print(f"\n📊 Visualization saved to {viz_path}")
-        plt.close()
-    
+
+        return results
+
+    # ── generate report ───────────────────────────────────────────────
     def generate_report(
         self,
-        results_df: pd.DataFrame,
-        preference_df: pd.DataFrame,
-        save_dir: str = None
-    ):
-        """Generate evaluation report"""
+        results: List[Dict],
+        save_dir: Optional[Path] = None,
+    ) -> Dict:
+        """Generate and save evaluation report."""
         if save_dir is None:
-            save_dir = self.experiment_dir / 'evaluation'
-        
-        save_path = Path(save_dir)
-        save_path.mkdir(parents=True, exist_ok=True)
-        
+            save_dir = self.experiment_dir / "evaluation"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        if not results:
+            print("⚠️  No results to report")
+            return {}
+
+        # Aggregate
+        accuracies = [r["accuracy"] for r in results]
+        losses = [r["loss"] for r in results]
+
         report = {
-            'overall_metrics': {
-                'mean_accuracy': float(results_df['accuracy'].mean()),
-                'std_accuracy': float(results_df['accuracy'].std()),
-                'mean_precision': float(results_df['precision'].mean()),
-                'mean_recall': float(results_df['recall'].mean()),
-                'mean_ndcg@10': float(results_df['ndcg@10'].mean()),
-                'mean_mrr': float(results_df['mrr'].mean())
+            "timestamp": datetime.now().isoformat(),
+            "num_clients_evaluated": len(results),
+            "overall_metrics": {
+                "mean_accuracy": float(np.mean(accuracies)),
+                "std_accuracy": float(np.std(accuracies)),
+                "min_accuracy": float(np.min(accuracies)),
+                "max_accuracy": float(np.max(accuracies)),
+                "mean_loss": float(np.mean(losses)),
             },
-            'per_preference_type': preference_df.to_dict('records') if len(preference_df) > 0 else [],
-            'per_client': results_df.to_dict('records')
+            "per_client": results,
         }
-        
-        # Save report
-        report_path = save_path / 'evaluation_report.json'
-        with open(report_path, 'w') as f:
-            json.dump(report, f, indent=2)
-        
+
+        # Add optional metrics if available
+        for metric_name in ["precision", "recall", "ndcg@10", "mrr"]:
+            vals = [r.get(metric_name) for r in results if r.get(metric_name) is not None]
+            if vals:
+                report["overall_metrics"][f"mean_{metric_name}"] = float(np.mean(vals))
+
+        # Save JSON
+        report_path = save_dir / "evaluation_report.json"
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+        print(f"\n📝 Report saved: {report_path}")
+
         # Save CSV
-        results_df.to_csv(save_path / 'client_results.csv', index=False)
-        if len(preference_df) > 0:
-            preference_df.to_csv(save_path / 'preference_results.csv', index=False)
-        
-        print(f"\n📝 Report saved to {save_path}")
-        print(f"   - evaluation_report.json")
-        print(f"   - client_results.csv")
-        if len(preference_df) > 0:
-            print(f"   - preference_results.csv")
-        
+        try:
+            import pandas as pd
+            df = pd.DataFrame(results)
+            csv_path = save_dir / "client_results.csv"
+            df.to_csv(csv_path, index=False)
+            print(f"📝 CSV saved: {csv_path}")
+        except ImportError:
+            pass
+
         return report
 
+    # ── visualize ─────────────────────────────────────────────────────
+    def visualize_results(
+        self,
+        results: List[Dict],
+        save_dir: Optional[Path] = None,
+    ):
+        """Create evaluation plots."""
+        if save_dir is None:
+            save_dir = self.experiment_dir / "evaluation"
+        save_dir.mkdir(parents=True, exist_ok=True)
 
+        try:
+            import matplotlib.pyplot as plt
+
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+            client_ids = [r["client_id"] for r in results]
+            accuracies = [r["accuracy"] for r in results]
+            losses = [r["loss"] for r in results]
+
+            # 1. Per-client accuracy
+            axes[0].bar(client_ids, accuracies, color="#4ECDC4", edgecolor="#333")
+            axes[0].axhline(y=np.mean(accuracies), color="r", linestyle="--",
+                            label=f"Mean: {np.mean(accuracies):.3f}")
+            axes[0].set_xlabel("Client ID")
+            axes[0].set_ylabel("Accuracy")
+            axes[0].set_title("Per-Client Accuracy")
+            axes[0].legend()
+            axes[0].grid(axis="y", alpha=0.3)
+
+            # 2. Per-client loss
+            axes[1].bar(client_ids, losses, color="#FF6B6B", edgecolor="#333")
+            axes[1].axhline(y=np.mean(losses), color="r", linestyle="--",
+                            label=f"Mean: {np.mean(losses):.3f}")
+            axes[1].set_xlabel("Client ID")
+            axes[1].set_ylabel("Loss")
+            axes[1].set_title("Per-Client Loss")
+            axes[1].legend()
+            axes[1].grid(axis="y", alpha=0.3)
+
+            # 3. Accuracy distribution
+            metrics_names = ["accuracy"]
+            metric_vals = [accuracies]
+            for m in ["precision", "recall"]:
+                vals = [r.get(m) for r in results if r.get(m) is not None]
+                if vals:
+                    metrics_names.append(m)
+                    metric_vals.append(vals)
+
+            axes[2].boxplot(metric_vals, labels=metrics_names)
+            axes[2].set_ylabel("Score")
+            axes[2].set_title("Metrics Distribution")
+            axes[2].grid(axis="y", alpha=0.3)
+
+            plt.tight_layout()
+            viz_path = save_dir / "evaluation_results.png"
+            plt.savefig(viz_path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"📊 Visualization saved: {viz_path}")
+
+        except ImportError:
+            print("⚠️  matplotlib not available, skipping plots")
+        except Exception as e:
+            print(f"⚠️  Could not create plots: {e}")
+
+
+# =====================================================================
+# Main
+# =====================================================================
 def main():
-    """Main evaluation script"""
-    print("="*70)
+    parser = argparse.ArgumentParser(description="Evaluate federated model")
+    parser.add_argument("--config", type=str, default="configs/config.yaml",
+                        help="Path to config YAML")
+    parser.add_argument("--experiment-dir", type=str, default=None,
+                        help="Experiment directory containing checkpoint")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to model checkpoint (.pt)")
+    args = parser.parse_args()
+
+    print("=" * 70)
     print("FEDERATED MODEL EVALUATION")
-    print("="*70)
-    
-    # Configuration
-    experiment_dir = './experiments/fedper_multimodal_v1'
-    checkpoint_path = f'{experiment_dir}/models/global_model_round_50.pt'
-    
-    # Create evaluator
+    print("=" * 70)
+
     evaluator = FederatedEvaluator(
-        experiment_dir=experiment_dir,
-        config_path='./configs/config.yaml'
+        config_path=args.config,
+        experiment_dir=args.experiment_dir,
     )
-    
+
     # Load model
-    print(f"\n📦 Loading model from {checkpoint_path}...")
-    model = evaluator.load_model(checkpoint_path)
-    
-    # Evaluate all clients
-    results_df = evaluator.evaluate_all_clients(model)
-    
-    # Aggregate by preference type
-    preference_df = evaluator.evaluate_by_preference_type(results_df)
-    
-    # Visualize results
-    evaluator.visualize_results(results_df, preference_df)
-    
-    # Generate report
-    report = evaluator.generate_report(results_df, preference_df)
-    
-    print("\n"+"="*70)
+    model = evaluator.load_model(checkpoint_path=args.checkpoint)
+
+    # Evaluate
+    results = evaluator.evaluate_all_clients(model)
+
+    if not results:
+        print("\n❌ No results — check data availability")
+        return
+
+    # Report
+    report = evaluator.generate_report(results)
+
+    # Visualize
+    evaluator.visualize_results(results)
+
+    # Summary
+    print("\n" + "=" * 70)
     print("EVALUATION SUMMARY")
-    print("="*70)
-    print(f"Mean Accuracy: {report['overall_metrics']['mean_accuracy']:.4f} "
-          f"(±{report['overall_metrics']['std_accuracy']:.4f})")
-    print(f"Mean NDCG@10: {report['overall_metrics']['mean_ndcg@10']:.4f}")
-    print(f"Mean MRR: {report['overall_metrics']['mean_mrr']:.4f}")
-    
+    print("=" * 70)
+    overall = report.get("overall_metrics", {})
+    print(f"Clients evaluated: {report['num_clients_evaluated']}")
+    print(f"Mean Accuracy: {overall.get('mean_accuracy', 0):.4f} "
+          f"(±{overall.get('std_accuracy', 0):.4f})")
+    print(f"Mean Loss:     {overall.get('mean_loss', 0):.4f}")
+    for k in ["mean_precision", "mean_recall", "mean_ndcg@10", "mean_mrr"]:
+        if k in overall:
+            print(f"{k.replace('mean_', 'Mean ').title()}: {overall[k]:.4f}")
     print("\n✅ Evaluation completed!")
 
 

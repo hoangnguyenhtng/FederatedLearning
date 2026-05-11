@@ -31,6 +31,6 @@ def create_model(model_config: dict) -> FedPerRecommender:
         multimodal_encoder=multimodal_encoder,  # ✅ Pass encoder object
         shared_hidden_dims=shared_dims,
         personal_hidden_dims=personal_dims,
-        num_items=num_classes,  # num_items parameter name, but value is num_classes (5)
+        num_classes=num_classes,  # ✅ Rating prediction: 5 classes (1-5 → 0-4)
         dropout=dropout
     )

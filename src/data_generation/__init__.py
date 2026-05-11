@@ -1,14 +1,25 @@
 """
 Data Generation Module
-Handles synthetic data generation and Non-IID data splitting
+Handles data generation, processing, and federated data loading
 """
 
-from .synthetic_data_generator import SyntheticDataGenerator
-from .non_iid_data_splitter import NonIIDDataSplitter
-from .federated_dataloader import FederatedDataLoader
+# Use lazy imports to avoid breaking when optional modules are missing
+__all__ = []
 
-__all__ = [
-    'SyntheticDataGenerator',
-    'NonIIDDataSplitter', 
-    'FederatedDataLoader'
-]
+try:
+    from .federated_dataloader import get_federated_dataloaders
+    __all__.append('get_federated_dataloaders')
+except ImportError:
+    pass
+
+try:
+    from .amazon_dataloader import get_amazon_dataloaders, AmazonDataset
+    __all__.extend(['get_amazon_dataloaders', 'AmazonDataset'])
+except ImportError:
+    pass
+
+try:
+    from .generate_demo_data import generate_demo_data
+    __all__.append('generate_demo_data')
+except ImportError:
+    pass
