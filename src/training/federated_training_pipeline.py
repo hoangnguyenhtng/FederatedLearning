@@ -353,8 +353,69 @@ class FederatedTrainingPipeline:
             config=self.config,
         )
 
-        # Create client function
-        client_fn = self._client_fn
+        # ----------------------------------------------------------------
+        # FIX: Tránh MemoryError khi Ray serialize closure
+        # Nếu pass self._client_fn trực tiếp, Ray sẽ pickle toàn bộ `self`
+        # (bao gồm 40 dataloaders + model = hàng trăm MB).
+        # Thay thế: tạo closure nhẹ chỉ capture dữ liệu tối thiểu.
+        # ----------------------------------------------------------------
+        import copy
+
+        # Snapshot những gì client_fn cần (không phải toàn bộ self)
+        _dataloaders   = self.dataloaders          # dict {cid: (train, test)}
+        _global_model  = self.global_model         # reference (not deepcopy)
+        _device        = self.device
+        _config        = self.config
+        _logger        = logger
+
+        def _lightweight_client_fn(context):
+            """Lightweight client factory - chỉ capture data cần thiết."""
+            # Extract cid
+            try:
+                if isinstance(context, (str, int)):
+                    cid = int(context)
+                elif isinstance(context, dict):
+                    cid = int(context.get('cid', context.get('partition-id', 0)))
+                elif hasattr(context, 'cid'):
+                    cid = int(context.cid)
+                elif hasattr(context, 'partition_id'):
+                    cid = int(context.partition_id)
+                else:
+                    cid = int(str(context))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError(f"Cannot extract client ID from context: {context}") from exc
+
+            if cid not in _dataloaders:
+                available = list(_dataloaders.keys())
+                raise ValueError(
+                    f"Client {cid} not found. Available: {available}"
+                )
+
+            train_loader, test_loader = _dataloaders[cid]
+            if train_loader is None or test_loader is None:
+                raise ValueError(f"Client {cid} has None loaders")
+
+            client_model = copy.deepcopy(_global_model)
+            client_model.to(_device)
+
+            numpy_client = FedPerClient(
+                client_id=cid,
+                model=client_model,
+                train_loader=train_loader,
+                test_loader=test_loader,
+                device=str(_device),
+                local_epochs=_config['training']['local_epochs'],
+                learning_rate=_config['training']['learning_rate'],
+                apply_dp=_config.get('privacy', {}).get('differential_privacy', False),
+            )
+
+            try:
+                return numpy_client.to_client()
+            except AttributeError:
+                return numpy_client
+
+        client_fn = _lightweight_client_fn
+
         
         # Configure simulation
         num_rounds = self.config['federated']['num_rounds']
@@ -383,15 +444,45 @@ class FederatedTrainingPipeline:
             # Set Ray environment variables before initialization to reduce memory pressure
             # This helps avoid Windows access violation errors
             os.environ.setdefault("RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE", "1")
-            os.environ.setdefault("RAY_DEDUP_LOGS", "1")  # Reduce log duplication
+            os.environ.setdefault("RAY_DEDUP_LOGS", "1")
+            # Tat memory monitor cua Ray de tranh false positive tren Windows
+            os.environ["RAY_memory_monitor_refresh_ms"] = "0"
             
-            # Configure Ray initialization to reduce memory pressure on Windows
-            # This helps avoid access violation errors
+            # ----------------------------------------------------------------
+            # Tinh toan object_store_memory an toan cho Ray
+            # Ray validation: total_ram - object_store - redis_overhead >= -3% total
+            # Dung gia tri co dinh nho de dam bao vuot qua validation.
+            # 512MB: du lon de serialize model weights (4.8MB) va tensors,
+            # nhung nho de khong anh huong RAM cho tasks.
+            # ----------------------------------------------------------------
+            import psutil
+            total_ram     = psutil.virtual_memory().total
+            available_ram = psutil.virtual_memory().available
+
+            # Object store: 10% of available RAM, min 256MB, max 512MB
+            obj_store_mb  = max(256, min(512, int(available_ram * 0.10 / (1024**2))))
+            obj_store_bytes = obj_store_mb * 1024 * 1024
+
+            # _memory: set explicitly to bypass Ray validation check.
+            # Without this, Ray computes: memory = avail - object_store.
+            # If avail is low (machine busy), validation fails with ValueError.
+            # By providing _memory directly, Ray skips the validation branch.
+            # Use 4GB or 60% of total_ram, whichever is smaller.
+            explicit_memory_bytes = min(
+                4 * 1024 * 1024 * 1024,           # 4 GB hard cap
+                int(total_ram * 0.60),              # 60% of physical RAM
+            )
+
+            logger.info(f"RAM total: {total_ram/1024**3:.1f}GB, Available: {available_ram/1024**3:.1f}GB")
+            logger.info(f"Ray object_store: {obj_store_mb}MB, task memory: {explicit_memory_bytes/1024**3:.1f}GB")
+
+            # Configure Ray - memory param NOT supported in this version
             ray_init_args = {
                 "ignore_reinit_error": True,
                 "include_dashboard": False,
-                "object_store_memory": 1 * 1024 * 1024 * 1024,  # 1GB (reduce from default ~2GB)
-                "num_cpus": min(6, os.cpu_count() or 4),  # Limit CPU usage to avoid overload
+                "object_store_memory": obj_store_bytes,
+                "_memory": explicit_memory_bytes,   # Bypass avail_memory validation
+                "num_cpus": min(4, os.cpu_count() or 2),
             }
             
             history = fl.simulation.start_simulation(
@@ -527,6 +618,12 @@ class FederatedTrainingPipeline:
 
 def main(config_path: Optional[str] = None):
     """Main entry point."""
+    # Fix Unicode encoding on Windows console
+    if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass  # Older Python or non-reconfigurable stream
     cfg_arg = config_path
     if cfg_arg is None:
         parser = argparse.ArgumentParser(description="Federated training (FedPer)")
@@ -567,9 +664,9 @@ def main(config_path: Optional[str] = None):
     print("FEDERATED MULTI-MODAL RECOMMENDATION SYSTEM")
     print("Training Pipeline with FedPer Architecture")
     print("="*70)
-    print(f"📄 Config: {resolved}")
-    print(f"📁 Experiment directory: {exp_dir}")
-    print(f"🖥️  Using device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
+    print(f"[CONFIG]  {resolved}")
+    print(f"[DIR]     {exp_dir}")
+    print(f"[DEVICE]  {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("")
     
     # Create and run pipeline

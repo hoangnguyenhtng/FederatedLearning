@@ -73,7 +73,10 @@ class FedPerClient(fl.client.NumPyClient):
             lr=learning_rate
         )
         
-        self.criterion = nn.CrossEntropyLoss()
+        # Class weights to handle imbalanced data (label 3+4 dominate ~70%)
+        # Amazon Reviews: label 0(4.6%), 1(10.4%), 2(14.2%), 3(36%), 4(34.8%)
+        class_weights = torch.tensor([5.0, 2.5, 1.8, 0.7, 0.72], dtype=torch.float32).to(device)
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         
     def get_parameters(self, config: Dict) -> List[np.ndarray]:
         """
@@ -194,9 +197,10 @@ class FedPerClient(fl.client.NumPyClient):
                     if 'text_embedding' in batch_data:
                         # Amazon data: Real text embeddings!
                         text_emb = batch_data['text_embedding'].to(self.device)
+                        text_emb = torch.nan_to_num(text_emb, nan=0.0, posinf=0.0, neginf=0.0)
                     else:
                         # Synthetic data: Create dummy (fallback)
-                        text_emb = torch.randn(batch_size, 384, device=self.device)
+                        text_emb = torch.zeros(batch_size, 384, device=self.device)  # zeros instead of random
                     
                     # Reshape image_emb to 2048 dim (ResNet-50 output)
                     if image_emb.shape[1] != 2048:
@@ -208,8 +212,8 @@ class FedPerClient(fl.client.NumPyClient):
                             image_emb = self._img_proj(image_emb)
                         else:
                             # Unexpected dimension
-                            print(f"⚠️  Warning: image_emb has unexpected shape {image_emb.shape}, creating 2048-dim dummy")
-                            image_emb = torch.randn(batch_size, 2048, device=self.device)
+                            print(f"Warning: image_emb has unexpected shape {image_emb.shape}, creating 2048-dim dummy")
+                            image_emb = torch.zeros(batch_size, 2048, device=self.device)
                 else:
                     # Tuple format (legacy TensorDataset)
                     text_emb = batch_data[0].to(self.device)
@@ -352,9 +356,10 @@ class FedPerClient(fl.client.NumPyClient):
                     if 'text_embedding' in batch_data:
                         # Amazon data: Real text embeddings!
                         text_emb = batch_data['text_embedding'].to(self.device)
+                        text_emb = torch.nan_to_num(text_emb, nan=0.0, posinf=0.0, neginf=0.0)
                     else:
                         # Synthetic data: Create dummy (fallback)
-                        text_emb = torch.randn(batch_size, 384, device=self.device)
+                        text_emb = torch.zeros(batch_size, 384, device=self.device)  # zeros instead of random
                     
                     # Reshape image_emb to 2048 dim (ResNet-50 output)
                     if image_emb.shape[1] != 2048:
@@ -363,9 +368,8 @@ class FedPerClient(fl.client.NumPyClient):
                                 self._img_proj = torch.nn.Linear(512, 2048).to(self.device)
                             image_emb = self._img_proj(image_emb)
                         else:
-                            # Unexpected dimension, create proper dummy
-                            print(f"⚠️  Warning: image_emb has unexpected shape {image_emb.shape}, creating 2048-dim dummy")
-                            image_emb = torch.randn(batch_size, 2048, device=self.device)
+                            print(f"Warning: image_emb has unexpected shape {image_emb.shape}, creating 2048-dim dummy")
+                            image_emb = torch.zeros(batch_size, 2048, device=self.device)
                 else:
                     # Tuple format (legacy TensorDataset)
                     text_emb = batch_data[0].to(self.device)

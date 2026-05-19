@@ -1,14 +1,14 @@
 # Federated Learning Configuration
 federated:
-  num_clients: 10
-  num_rounds: 100                # Increased from 50 (more training for better convergence)
+  num_clients: 40                # 40 clients: 10 per domain (Beauty/Games/Fashion/Baby)
+  num_rounds: 100                # 100 rounds for thesis convergence
   
-  # Client selection
-  # Increased for better stability and evaluation accuracy
-  fraction_fit: 0.6              # 60% clients per round (6/10) - increased from 0.4
-  fraction_evaluate: 1.0         # 100% for evaluation (ALL 10) - CRITICAL for stable metrics!
-  min_fit_clients: 6             # Minimum clients for training - increased from 2
-  min_evaluate_clients: 10       # Evaluate ALL clients - increased from 2
+  # Client selection  (scaled for 40 clients)
+  fraction_fit: 0.1              # 10% = 4 clients/round (memory-safe on 16GB)
+  fraction_evaluate: 0.25        # 25% = 10 clients for evaluation
+  min_fit_clients: 4             # At least 4 clients per round
+  min_evaluate_clients: 10       # Evaluate on 10 clients minimum
+  min_available_clients: 40      # All 40 must be available
   
   # FedPer specific
   shared_layers: 3               # Number of shared layers
@@ -100,9 +100,9 @@ vector_db:
 training:
   # Optimization
   # Reduced batch size for Windows stability (avoid Ray memory issues)
-  batch_size: 32                 # Increased back to 32 (more stable with gradient clipping)
+  batch_size: 16                 # Reduced to 16 to fit in 16GB RAM and RTX 2080Ti VRAM safely
   local_epochs: 5                # Increased from 3 (more local learning per round)
-  learning_rate: 0.0001          # Restored to 0.0001 (gradient clipping prevents NaN)
+  learning_rate: 0.001           # Tăng từ 0.0001 để model học nhanh hơn (gradient clipping ngăn NaN)
   optimizer: "adam"
   weight_decay: 1e-4             # Increased from 1e-5 (more regularization)
   gradient_clip: 1.0             # Clip gradients to prevent NaN
@@ -148,7 +148,7 @@ api:
 paths:
   data_dir: "./data"
   data_raw: "./data/raw"
-  data_processed: "./data/processed"
+  data_processed: "./data/amazon_2023_processed"  # 40-client thesis dataset
   models_dir: "models"
   experiments_dir: "experiments"
   logs_dir: "logs"

@@ -56,7 +56,7 @@ model:
 # Training configuration
 training:
   # Batch & epochs
-  batch_size: 32               # Stable with gradient clipping
+  batch_size: 16               # Reduced from 32 for 11GB VRAM and 16GB System RAM
   local_epochs: 5              # More local learning
   
   # Optimization
@@ -84,10 +84,10 @@ federated:
   num_rounds: 100              # Reduced for faster training (was 200)
   
   # Client selection (higher for stability with more clients)
-  fraction_fit: 0.4            # 16/40 clients per round
-  fraction_evaluate: 0.5       # 20/40 clients for evaluation
-  min_fit_clients: 16
-  min_evaluate_clients: 20
+  fraction_fit: 0.1            # 4/40 clients per round (Reduced to fit in 16GB RAM)
+  fraction_evaluate: 0.25      # 10/40 clients for evaluation
+  min_fit_clients: 4
+  min_evaluate_clients: 10
   min_available_clients: 40
   
   # FedPer specific
@@ -157,10 +157,10 @@ seed: 42
 
 # Hardware
 hardware:
-  use_gpu: true                # Enable if available
-  num_gpus: 0.2                # Per client (5 clients per GPU)
-  num_cpus: 1                  # Per client
-  memory_per_client: "2GB"     # Ray resource allocation
+  use_gpu: true                # Enable if available (RTX 2080 Ti)
+  num_gpus: 0.25               # Per client (4 clients per GPU -> 4 * 0.25 = 1.0)
+  num_cpus: 1                  # Per client (i7-3770 has 8 threads)
+  memory_per_client: "1GB"     # Reduced from 2GB to prevent Ray OOM on 16GB RAM
 
 # ================================================================
 # THESIS-SPECIFIC SETTINGS
