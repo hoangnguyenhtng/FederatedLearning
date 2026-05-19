@@ -416,7 +416,7 @@ def main():
     
     # Configuration
     CATEGORY = "All_Beauty"  # Start with smaller dataset for testing
-    SAMPLE_SIZE = 10000  # Process 10K interactions first (remove for full dataset)
+    SAMPLE_SIZE = None  # Process all interactions for full dataset
     NUM_CLIENTS = 10
     ALPHA = 0.5  # Non-IID parameter
     
