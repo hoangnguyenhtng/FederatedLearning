@@ -17,7 +17,6 @@ import pickle
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# ── Configuration ──────────────────────────────────────────────────────
 NUM_CLIENTS = 10
 SAMPLES_PER_CLIENT = 200  # Total: ~2000 samples (fast training)
 OUTPUT_DIR = project_root / "data" / "amazon_2023_processed"

@@ -45,8 +45,8 @@ class MetricsCalculator:
     @staticmethod
     def ndcg_at_k(predictions: torch.Tensor, targets: torch.Tensor, k: int = 10) -> float:
         """
-        Calculate NDCG@K (Normalized Discounted Cumulative Gain)
-        For rating prediction task
+        Heuristic NDCG trên tập mẫu (xếp hạng mẫu theo rating dự đoán mềm).
+        Không tương đương NDCG@K trong gợi ý top-K sản phẩm — chỉ tham khảo, đừng diễn giải như ranking thật.
         """
         # Get predicted scores (use softmax probabilities weighted by rating values)
         probs = torch.softmax(predictions, dim=1)
@@ -79,24 +79,18 @@ class MetricsCalculator:
     @staticmethod
     def mrr(predictions: torch.Tensor, targets: torch.Tensor) -> float:
         """
-        Calculate Mean Reciprocal Rank
-        For each item, find rank of correct rating in predictions
+        MRR theo thứ hạng lớp đúng trong logits (5 lớp rating).
+        Mỗi mẫu: xếp hạng các lớp theo logit giảm dần, tìm vị trí của nhãn đúng (1-based), RR = 1/rank.
         """
-        # Get predicted rating (most probable)
-        pred_labels = predictions.argmax(dim=1)
-        
-        # Calculate reciprocal rank
-        reciprocal_ranks = []
-        for pred, target in zip(pred_labels, targets):
-            if pred == target:
-                reciprocal_ranks.append(1.0)
-            else:
-                # Find rank of correct answer in sorted predictions
-                sorted_preds = predictions[len(reciprocal_ranks)].argsort(descending=True)
-                rank = (sorted_preds == target).nonzero(as_tuple=True)[0].item() + 1
-                reciprocal_ranks.append(1.0 / rank)
-        
-        return np.mean(reciprocal_ranks)
+        reciprocal_ranks: List[float] = []
+        for i in range(predictions.shape[0]):
+            logits = predictions[i]
+            t = int(targets[i].item())
+            order = logits.argsort(descending=True)
+            match = (order == t).nonzero(as_tuple=True)[0]
+            rank = int(match[0].item()) + 1
+            reciprocal_ranks.append(1.0 / rank)
+        return float(np.mean(reciprocal_ranks)) if reciprocal_ranks else 0.0
 
 
 def calculate_metrics(
@@ -452,6 +446,8 @@ def resolve_amazon_federated_data_dir(config: dict, cwd: Optional[Path] = None) 
     dp = paths.get("data_processed")
     if dp:
         candidates.append((root / dp).resolve())
+    # Bộ thesis multi-category (40 client, ~220k mẫu) — thường nằm đây, không phải ./data/processed gốc
+    candidates.append((root / "data" / "processed" / "multi_category").resolve())
     candidates.append((root / "data" / "amazon_2023_processed").resolve())
     seen = set()
     for p in candidates:
@@ -463,6 +459,67 @@ def resolve_amazon_federated_data_dir(config: dict, cwd: Optional[Path] = None) 
     return None
 
 
+def config_float(value, default: float) -> float:
+    """Coerce YAML/scalar values to float (handles strings like '1e-4')."""
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        return float(default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return float(default)
+        return float(s)
+    return float(value)
+
+
+def config_int(value, default: int) -> int:
+    if value is None:
+        return int(default)
+    if isinstance(value, bool):
+        return int(default)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return int(default)
+        return int(float(s))
+    return int(default)
+
+
+def normalize_training_config(config: dict) -> None:
+    """Ensure training/federated numeric fields are not strings after YAML load."""
+    tr = config.setdefault("training", {})
+    tr["learning_rate"] = config_float(tr.get("learning_rate"), 1e-3)
+    tr["weight_decay"] = config_float(tr.get("weight_decay"), 1e-4)
+    tr["batch_size"] = config_int(tr.get("batch_size"), 32)
+    tr["local_epochs"] = config_int(tr.get("local_epochs"), 3)
+    tr["personalize_epochs_eval"] = config_int(tr.get("personalize_epochs_eval"), 2)
+    tr["test_split"] = config_float(tr.get("test_split"), 0.2)
+    if "gradient_clip" in tr:
+        tr["gradient_clip"] = config_float(tr.get("gradient_clip"), 1.0)
+
+    fed = config.setdefault("federated", {})
+    for key, default in (
+        ("num_clients", 10),
+        ("num_rounds", 100),
+        ("min_fit_clients", 3),
+        ("min_evaluate_clients", 3),
+        ("min_available_clients", 5),
+    ):
+        fed[key] = config_int(fed.get(key), default)
+    for key, default in (
+        ("fraction_fit", 0.6),
+        ("fraction_evaluate", 0.5),
+    ):
+        fed[key] = config_float(fed.get(key), default)
+
+
 def experiments_base_dir(config: dict, cwd: Optional[Path] = None) -> Path:
     """Thư mục gốc chứa thư mục experiment (fedper_*)."""
     root = (cwd or Path.cwd()).resolve()
@@ -471,7 +528,6 @@ def experiments_base_dir(config: dict, cwd: Optional[Path] = None) -> Path:
     return (root / rel).resolve()
 
 
-# Export all functions
 __all__ = [
     'MetricsCalculator',
     'calculate_metrics',
@@ -484,4 +540,7 @@ __all__ = [
     'load_checkpoint',
     'resolve_amazon_federated_data_dir',
     'experiments_base_dir',
+    'config_float',
+    'config_int',
+    'normalize_training_config',
 ]

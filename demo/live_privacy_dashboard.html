@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live — Laptop nhận (Privacy Demo)</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .live-wrap { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+        .live-head { margin-bottom: 1rem; }
+        .live-head h1 { font-size: 1.35rem; margin: 0 0 0.35rem; }
+        .live-head p { color: var(--text-muted); font-size: 0.9rem; margin: 0; }
+        .session-row {
+            display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;
+            margin: 1rem 0; padding: 1rem;
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+        }
+        .session-id { font-family: ui-monospace, monospace; font-size: 0.85rem; word-break: break-all; flex: 1; min-width: 200px; }
+        .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .btn-sec {
+            padding: 0.45rem 0.85rem; border-radius: var(--radius-sm);
+            border: 1px solid var(--border); background: rgba(99,102,241,0.12);
+            color: var(--text-main); cursor: pointer; font-size: 0.85rem;
+        }
+        .btn-sec:hover { border-color: rgba(99,102,241,0.5); }
+        .qr-section-title { font-size: 0.95rem; margin: 0.75rem 0 0.35rem; font-weight: 600; color: var(--text-main); }
+        #qrBox { margin: 0.25rem 0 0.75rem; padding: 0.75rem; background: #fff; border-radius: 8px; display: inline-block; min-width: 120px; min-height: 120px; border: 1px solid rgba(0,0,0,0.08); }
+        #qrBox canvas, #qrBox img { display: block; max-width: 100%; height: auto; }
+        .status-pill {
+            display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px;
+            font-size: 0.75rem; font-weight: 600;
+        }
+        .status-ok { background: rgba(16,185,129,0.2); color: #34d399; }
+        .status-warn { background: rgba(245,158,11,0.2); color: #fbbf24; }
+        .split {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+        }
+        @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+        .panel {
+            border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 1rem; background: var(--bg-glass); min-height: 220px;
+        }
+        .panel h3 { margin: 0 0 0.75rem; font-size: 1rem; }
+        .panel.phone h3 { color: #fbbf24; }
+        .panel.server h3 { color: #818cf8; }
+        .kv { margin-bottom: 0.65rem; font-size: 0.82rem; }
+        .kv .k { color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+        .kv .v { margin-top: 0.15rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+        .block-stay { border-left: 3px solid #f59e0b; padding-left: 0.6rem; margin-bottom: 0.5rem; }
+        .block-send { border-left: 3px solid #6366f1; padding-left: 0.6rem; margin-bottom: 0.5rem; }
+        .block-recv { border-left: 3px solid #22c55e; padding-left: 0.6rem; margin-bottom: 0.5rem; }
+        .empty-hint { color: var(--text-muted); font-size: 0.85rem; }
+        .log-line { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="live-wrap">
+        <div class="live-head">
+            <h1>Đồng bộ</h1>
+            <p class="log-line"><a class="back" href="index.html">Demo</a></p>
+        </div>
+
+        <div class="session-row">
+            <div>
+                <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.35rem;">Phiên</div>
+                <div class="session-id" id="sessionId">—</div>
+            </div>
+            <div class="btn-row">
+                <button type="button" class="btn-sec" id="btnNewSession">Phiên mới</button>
+                <button type="button" class="btn-sec" id="btnCopy">Copy mã</button>
+                <button type="button" class="btn-sec" id="btnCopyUrl">Copy link</button>
+            </div>
+        </div>
+        <div>
+            <span class="status-pill status-warn" id="wsStatus">…</span>
+            <span class="status-pill status-warn" id="peerStatus">Client: …</span>
+        </div>
+        <h4 class="qr-section-title">QR</h4>
+        <div id="qrBox" aria-live="polite"><span class="empty-hint">…</span></div>
+        <p class="log-line" id="phoneUrlHint"></p>
+
+        <div class="panel" style="margin:1rem 0;">
+            <h3 id="scenarioTitle">—</h3>
+            <div class="split">
+                <div class="panel phone">
+                    <h3>📱 Client</h3>
+                    <div id="phoneLocal" class="empty-hint">—</div>
+                    <hr style="border:none;border-top:1px solid var(--border);margin:0.75rem 0;">
+                    <h4 style="margin:0 0 0.5rem;font-size:0.85rem;color:#a5b4fc;">Gói rời thiết bị (minh họa)</h4>
+                    <div id="phoneOut" class="empty-hint">—</div>
+                </div>
+                <div class="panel server">
+                    <h3>🖥️ Server</h3>
+                    <div id="serverIn" class="empty-hint">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script>
+(function () {
+    function randomSession() {
+        const a = new Uint8Array(12);
+        crypto.getRandomValues(a);
+        return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function getSessionFromUrl() {
+        const p = new URLSearchParams(location.search).get('session');
+        if (p && /^[a-zA-Z0-9_-]{8,64}$/.test(p)) return p;
+        return null;
+    }
+
+    let sessionId = getSessionFromUrl() || randomSession();
+    const sessionEl = document.getElementById('sessionId');
+    const wsStatus = document.getElementById('wsStatus');
+    const peerStatus = document.getElementById('peerStatus');
+    const phoneUrlHint = document.getElementById('phoneUrlHint');
+
+    let lanBase = null;
+
+    function escapeHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function syncUrl() {
+        const u = new URL(location.href);
+        u.searchParams.set('session', sessionId);
+        history.replaceState({}, '', u);
+    }
+
+    function phoneUrlFull() {
+        var path = '/demo/mobile_privacy_demo.html?session=' + encodeURIComponent(sessionId);
+        if (lanBase) {
+            return lanBase.replace(/\/$/, '') + path;
+        }
+        var phoneUrl = new URL('mobile_privacy_demo.html', location.href);
+        phoneUrl.searchParams.set('session', sessionId);
+        return phoneUrl.href;
+    }
+
+    function renderPhoneUrlHint() {
+        var href = phoneUrlFull();
+        phoneUrlHint.innerHTML =
+            '<code style="word-break:break-all;font-size:0.78rem;color:var(--text-muted)">' +
+            escapeHtml(href) +
+            '</code>';
+        return href;
+    }
+
+    function drawQrRemote(url, box) {
+        box.innerHTML = '';
+        var img = document.createElement('img');
+        img.width = 220;
+        img.height = 220;
+        img.alt = 'QR';
+        img.referrerPolicy = 'no-referrer';
+        img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+        img.onerror = function () {
+            box.innerHTML = '<span class="empty-hint">QR</span>';
+        };
+        box.appendChild(img);
+    }
+
+    function drawQr(url) {
+        var box = document.getElementById('qrBox');
+        box.innerHTML = '<span class="empty-hint">…</span>';
+
+        function showDataUrl(dataUrl) {
+            box.innerHTML = '';
+            var img = document.createElement('img');
+            img.src = dataUrl;
+            img.width = 220;
+            img.height = 220;
+            img.alt = 'Quét bằng điện thoại để mở trang client';
+            img.style.display = 'block';
+            box.appendChild(img);
+        }
+
+        if (typeof QRCode === 'undefined') {
+            drawQrRemote(url, box);
+            return;
+        }
+        QRCode.toDataURL(
+            url,
+            { width: 220, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#111827', light: '#ffffff' } },
+            function (err, dataUrl) {
+                if (err || !dataUrl) {
+                    drawQrRemote(url, box);
+                    return;
+                }
+                showDataUrl(dataUrl);
+            }
+        );
+    }
+
+    function applyExchange(msg) {
+        document.getElementById('scenarioTitle').textContent = msg.scenario_title || 'Kịch bản';
+
+        function fillList(el, items, cssClass) {
+            el.innerHTML = '';
+            if (!items || !items.length) {
+                el.innerHTML = '<span class="empty-hint">—</span>';
+                return;
+            }
+            items.forEach(function (row) {
+                const d = document.createElement('div');
+                d.className = 'kv ' + cssClass;
+                d.innerHTML = '<div class="k">' + escapeHtml(row.label) + '</div><div class="v">' + escapeHtml(row.text) + '</div>';
+                el.appendChild(d);
+            });
+        }
+
+        const ps = msg.phone_side || {};
+        const ss = msg.server_side || {};
+        const stay = ps.stay_local || [];
+        const out = ps.leaves_device || [];
+        const recv = ss.receives || [];
+
+        const phoneLocal = document.getElementById('phoneLocal');
+        phoneLocal.innerHTML = '';
+        if (stay.length) {
+            stay.forEach(function (row) {
+                const d = document.createElement('div');
+                d.className = 'kv block-stay';
+                d.innerHTML = '<div class="k">🔒 Ở máy (không gửi raw)</div><div class="v"><strong>' + escapeHtml(row.label) + '</strong><br>' + escapeHtml(row.text) + '</div>';
+                phoneLocal.appendChild(d);
+            });
+        } else {
+            phoneLocal.innerHTML = '<span class="empty-hint">—</span>';
+        }
+
+        fillList(document.getElementById('phoneOut'), out, 'block-send');
+        fillList(document.getElementById('serverIn'), recv, 'block-recv');
+    }
+
+    function setSession(id) {
+        sessionId = id;
+        wsReconnectAttempt = 0;
+        sessionEl.textContent = sessionId;
+        syncUrl();
+        const url = renderPhoneUrlHint();
+        drawQr(url);
+        connectWs();
+    }
+
+    let ws;
+    var wsReconnectAttempt = 0;
+    var wsReconnectTimer = null;
+    var wsPingTimer = null;
+
+    function clearWsPing() {
+        if (wsPingTimer) {
+            clearInterval(wsPingTimer);
+            wsPingTimer = null;
+        }
+    }
+
+    function armWsPing(sock) {
+        clearWsPing();
+        wsPingTimer = setInterval(function () {
+            if (ws === sock && sock.readyState === WebSocket.OPEN) {
+                try {
+                    sock.send(JSON.stringify({ type: 'ping' }));
+                } catch (e) {}
+            }
+        }, 20000);
+    }
+
+    function scheduleWsReconnect() {
+        if (wsReconnectTimer) return;
+        var delay = Math.min(15000, 800 + wsReconnectAttempt * 900);
+        wsReconnectTimer = setTimeout(function () {
+            wsReconnectTimer = null;
+            connectWs();
+        }, delay);
+    }
+
+    function connectWs() {
+        if (wsReconnectTimer) {
+            clearTimeout(wsReconnectTimer);
+            wsReconnectTimer = null;
+        }
+        clearWsPing();
+        if (ws) {
+            try {
+                ws.close();
+            } catch (e) {}
+        }
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = proto + '//' + location.host + '/ws/privacy-demo/' + encodeURIComponent(sessionId) + '?role=laptop';
+        const sock = new WebSocket(url);
+        ws = sock;
+        wsStatus.textContent = 'Đang kết nối…';
+        wsStatus.className = 'status-pill status-warn';
+
+        sock.onopen = function () {
+            if (ws !== sock) return;
+            wsReconnectAttempt = 0;
+            wsStatus.textContent = 'Đã kết nối';
+            wsStatus.className = 'status-pill status-ok';
+            armWsPing(sock);
+        };
+        sock.onclose = function (ev) {
+            if (ws !== sock) return;
+            clearWsPing();
+            var codeHint = ev.code ? ' · ' + ev.code : '';
+            if (ev.code === 4400 || ev.code === 4401) {
+                wsStatus.textContent = 'Từ chối' + codeHint;
+                wsStatus.className = 'status-pill status-warn';
+                return;
+            }
+            wsReconnectAttempt++;
+            if (wsReconnectAttempt > 40) {
+                wsStatus.textContent = 'Mất kết nối — F5 hoặc kiểm tra API';
+                wsStatus.className = 'status-pill status-warn';
+                return;
+            }
+            wsStatus.textContent =
+                'Ngắt' +
+                codeHint +
+                ' · thử lại sau ~' +
+                Math.round(Math.min(15000, 800 + wsReconnectAttempt * 900) / 1000) +
+                's';
+            wsStatus.className = 'status-pill status-warn';
+            scheduleWsReconnect();
+        };
+        sock.onerror = function () {
+            if (ws !== sock) return;
+            wsStatus.textContent = 'Lỗi — đang thử lại…';
+            wsStatus.className = 'status-pill status-warn';
+        };
+        sock.onmessage = function (ev) {
+            if (ws !== sock) return;
+            let msg;
+            try {
+                msg = JSON.parse(ev.data);
+            } catch (e) {
+                return;
+            }
+            if (msg.type === 'pong') return;
+            if (msg.type === 'system') {
+                peerStatus.textContent = 'Client: ' + (msg.peer_online ? 'có' : 'chưa');
+                peerStatus.className = 'status-pill ' + (msg.peer_online ? 'status-ok' : 'status-warn');
+                return;
+            }
+            if (msg.type === 'privacy_exchange') {
+                applyExchange(msg);
+            }
+        };
+    }
+
+    document.getElementById('btnNewSession').addEventListener('click', function () {
+        setSession(randomSession());
+    });
+    document.getElementById('btnCopy').addEventListener('click', function () {
+        navigator.clipboard.writeText(sessionId);
+    });
+    document.getElementById('btnCopyUrl').addEventListener('click', function () {
+        navigator.clipboard.writeText(phoneUrlFull());
+    });
+
+    fetch('/api/demo-lan-hint')
+        .then(function (r) {
+            return r.json();
+        })
+        .then(function (data) {
+            if (data.ok && data.base_for_phone) {
+                lanBase = data.base_for_phone;
+            }
+        })
+        .catch(function () {})
+        .finally(function () {
+            sessionEl.textContent = sessionId;
+            syncUrl();
+            var u = renderPhoneUrlHint();
+            drawQr(u);
+            connectWs();
+        });
+})();
+    </script>
+</body>
+</html>

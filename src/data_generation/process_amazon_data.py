@@ -27,6 +27,7 @@ import pickle
 # ML libraries
 from sentence_transformers import SentenceTransformer
 import torchvision.models as models
+# pyrefly: ignore [missing-import]
 import torchvision.transforms as transforms
 
 class AmazonDataProcessor:

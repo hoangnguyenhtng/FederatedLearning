@@ -1,0 +1,207 @@
+# Phân Tích Accuracy Stuck ~0.6 — FedPer Recommendation System
+
+## Tóm tắt hiện tượng
+
+| Triệu chứng | Giá trị |
+|---|---|
+| Loss | Giảm đều: 1.40 → 1.15 (đang học) |
+| Accuracy | Không tăng: ~0.62 suốt 100 rounds |
+| Expected (config) | round 50: 60-65%, round 100: 72-76% |
+
+Loss đang giảm nhưng accuracy không tăng = **model đang học nhưng không học đúng thứ cần học**. Đây là dấu hiệu của nhiều vấn đề cùng lúc.
+
+---
+
+## 🔴 Nguyên nhân 1 (NGHIÊM TRỌNG NHẤT): Class Imbalance Cực Kỳ Lớn
+
+### Bằng chứng trong code
+Trong `local_trainer.py` dòng 67–69:
+```python
+class_counts = torch.tensor([0.04, 1.5, 15.9, 50.6, 31.7])  # From your data
+```
+
+Phân phối rating thực tế:
+| Rating (class) | % dữ liệu |
+|---|---|
+| 1 sao (class 0) | 0.04% |
+| 2 sao (class 1) | 1.5% |
+| 3 sao (class 2) | 15.9% |
+| 4 sao (class 3) | 50.6% |
+| 5 sao (class 4) | 31.7% |
+
+**~82% dữ liệu thuộc rating 4 và 5 sao.** Nếu model dự đoán toàn bộ là rating 4, nó đã đạt ~50% accuracy mà không cần học gì!
+
+> **⚠️ Vấn đề thực sự:** `class_weights` này chỉ được dùng trong `LocalTrainer`, nhưng trong `FedPerClient` (dùng bởi Flower simulation), `criterion` được khởi tạo là `nn.CrossEntropyLoss()` **KHÔNG có weight** (dòng 76 trong `client.py`). Toàn bộ quá trình federated training đang dùng loss **không weighted**!
+
+---
+
+## 🔴 Nguyên nhân 2 (NGHIÊM TRỌNG): Image Embedding Bị Mất Thông Tin
+
+### Bằng chứng trong code — `client.py` dòng 202–212:
+```python
+if image_emb.shape[1] != 2048:
+    if image_emb.shape[1] == 512:
+        # Synthetic data: Project 512 → 2048
+        if not hasattr(self, '_img_proj'):
+            self._img_proj = torch.nn.Linear(512, 2048).to(self.device)
+        image_emb = self._img_proj(image_emb)
+    else:
+        # Unexpected dimension
+        image_emb = torch.randn(batch_size, 2048, device=self.device)  # 🔴 RANDOM!
+```
+
+**Nếu `image_embedding` trong data không phải 2048-dim, model sẽ nhận RANDOM NOISE làm image input**, khiến modality này hoàn toàn vô dụng và gây nhiễu training.
+
+---
+
+## 🟡 Nguyên nhân 3: FedPer Aggregation Bị Sai — Multimodal Encoder Bị Share Nhưng Không Được Aggregate Đúng
+
+### Bằng chứng trong code
+
+**`get_parameters()` trong `client.py`** gửi `shared_parameters` = multimodal encoder + shared_base.
+
+**`set_parameters()` trong `client.py`** cập nhật lại shared params từ server.
+
+**NHƯNG:** Trong `fit()` (dòng 59–74), có **3 optimizer riêng biệt**:
+```python
+self.optimizer_shared    # Chỉ cho shared_base
+self.optimizer_personal  # Chỉ cho personal_head
+self.optimizer_multimodal  # Chỉ cho multimodal_encoder
+```
+
+Khi server gửi aggregated shared params xuống client mới, optimizer state của 3 optimizer này **bị reset**, nhưng các optimizer không được khởi tạo lại → **momentum/Adam state bị stale**, gây unstable training sau mỗi round.
+
+---
+
+## 🟡 Nguyên nhân 4: Learning Rate Quá Nhỏ + Cosine Scheduler Phản Tác Dụng
+
+Từ config:
+```yaml
+learning_rate: 0.0001   # Rất nhỏ
+scheduler_type: "cosine"
+eta_min: 0.00001        # Final LR = 10x nhỏ hơn nữa
+```
+
+**Vấn đề:** LR 1e-4 với cosine scheduler sẽ decay từ 1e-4 → 1e-5. Trong Federated Learning, mỗi round chỉ có 5 local epochs. Với 40 clients và non-IID data (alpha=0.5), model cần LR **lớn hơn** để converge qua aggregation noise.
+
+Đây là lý do loss giảm chậm sau round 20 và không breakthrough được ~1.15.
+
+---
+
+## 🟡 Nguyên nhân 5: Non-IID Heterogeneity Cao Với Nhiều Client
+
+Từ config:
+```yaml
+alpha: 0.5   # Dirichlet concentration
+num_clients: 40
+fraction_fit: 0.4  # Chỉ 16/40 clients mỗi round
+```
+
+Với `alpha=0.5`, data distribution giữa các client rất khác nhau. Chỉ 16/40 clients train mỗi round → global model phải average gradients từ rất nhiều distribution khác nhau. FedPer giúp bằng personal head, nhưng nếu shared base không học được representation tốt do LR nhỏ + loss unweighted, personal head không có gì để specialize.
+
+---
+
+## 🟢 Accuracy 0.62 — Là Bao Nhiêu?
+
+Với 5-class classification và distribution 50.6% class 4:
+- **Naive majority baseline** (predict toàn class 4): ~50.6%
+- **Model hiện tại**: ~62% 
+- **Cải thiện so với random**: chỉ ~11.4%
+
+Model đang học được một chút nhưng bị giới hạn bởi class imbalance chưa được xử lý đúng.
+
+---
+
+## ✅ Giải Pháp Theo Thứ Tự Ưu Tiên
+
+### Fix 1: Thêm Class Weights vào FedPerClient (QUAN TRỌNG NHẤT)
+
+**File:** `src/federated/client.py` — Thay dòng 76:
+```python
+# TRƯỚC (sai):
+self.criterion = nn.CrossEntropyLoss()
+
+# SAU (đúng):
+class_counts = torch.tensor([0.04, 1.5, 15.9, 50.6, 31.7])
+class_weights = 1.0 / (class_counts + 1e-6)
+class_weights = class_weights / class_weights.sum() * 5
+self.criterion = nn.CrossEntropyLoss(
+    weight=class_weights.to(torch.device(device))
+)
+```
+
+### Fix 2: Kiểm Tra và Đảm Bảo Image Embedding Đúng Chiều
+
+**File:** `src/data_generation/process_amazon_multi_category.py`
+
+Cần kiểm tra chiều của `image_embedding` đang được lưu trong data.pkl. Chạy lệnh này để kiểm tra:
+```python
+import pandas as pd
+df = pd.read_pickle('data/processed/multi_category/client_0/data.pkl')
+print(df['image_embedding'].iloc[0].shape)  # Phải là (2048,)
+```
+
+Nếu không phải 2048, cần fix trong `client.py` để KHÔNG tạo random noise.
+
+### Fix 3: Tăng Learning Rate và Điều Chỉnh Scheduler
+
+**File:** `configs/config_multi_category.yaml`:
+```yaml
+training:
+  learning_rate: 0.001      # Tăng 10x: 0.0001 → 0.001
+  scheduler_params:
+    T_max: 100
+    eta_min: 0.0001         # Tăng 10x: 0.00001 → 0.0001
+```
+
+### Fix 4: Reset Optimizer State Sau Mỗi Round
+
+**File:** `src/federated/client.py` — Trong `fit()`, sau `set_parameters()`:
+```python
+def fit(self, parameters, config):
+    self.set_parameters(parameters)
+    
+    # Reset optimizer state sau khi nhận model mới từ server
+    # Tránh stale Adam momentum gây conflict với aggregated weights
+    self.optimizer_shared = optim.Adam(
+        self.model.shared_base.parameters(), lr=self.learning_rate
+    )
+    self.optimizer_personal = optim.Adam(
+        self.model.personal_head.parameters(), lr=self.learning_rate
+    )
+    self.optimizer_multimodal = optim.Adam(
+        self.model.multimodal_encoder.parameters(), lr=self.learning_rate
+    )
+    # ... tiếp tục training
+```
+
+### Fix 5 (Optional — Tăng Diversity): Tăng alpha Dirichlet
+
+```yaml
+data_generation:
+  alpha: 1.0   # Tăng từ 0.5 → 1.0 (ít heterogeneous hơn, converge nhanh hơn)
+```
+
+Sau khi model converge tốt, có thể giảm alpha lại để test privacy scenario.
+
+---
+
+## Dự Đoán Kết Quả Sau Fix
+
+| Fix | Accuracy Tăng Dự Kiến |
+|---|---|
+| Fix 1 (class weights) | +8–12% (từ 0.62 → ~0.72) |
+| Fix 2 (image embedding) | +3–5% nếu hiện đang dùng random |
+| Fix 3 (learning rate) | +3–5% converge nhanh hơn |
+| Fix 4 (optimizer reset) | Training ổn định hơn |
+| **Tổng cộng** | **~0.72–0.80% sau 100 rounds** |
+
+---
+
+## Checklist Thực Hiện
+
+- [ ] Kiểm tra chiều image_embedding: `df['image_embedding'].iloc[0].shape`
+- [ ] Thêm class weights vào `FedPerClient.__init__()` trong `client.py`
+- [ ] Tăng learning_rate lên `0.001` trong config
+- [ ] Reset optimizer trong `fit()` của `client.py`
+- [ ] Rerun training với 50 rounds để xem improvement

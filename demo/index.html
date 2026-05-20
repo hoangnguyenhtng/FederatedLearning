@@ -11,7 +11,6 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Header -->
     <header class="header">
         <div class="header-content">
             <div class="logo">
@@ -31,7 +30,6 @@
         </div>
     </header>
 
-    <!-- Tab: Overview -->
     <section class="tab-content active" id="tab-overview">
         <div class="hero">
             <h2 class="hero-title">Hệ Thống Đề Xuất Sản Phẩm<br><span class="gradient-text">Bảo Vệ Quyền Riêng Tư</span></h2>
@@ -41,13 +39,13 @@
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-icon">👥</div>
-                <div class="stat-value" id="statClients">10</div>
+                <div class="stat-value" id="statClients">40</div>
                 <div class="stat-label">Federated Clients</div>
                 <div class="stat-desc">Mỗi client giữ data riêng</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">📊</div>
-                <div class="stat-value" id="statSamples">1,034</div>
+                <div class="stat-value" id="statSamples">—</div>
                 <div class="stat-label">Training Samples</div>
                 <div class="stat-desc">Amazon Reviews 2023</div>
             </div>
@@ -93,7 +91,6 @@
         </div>
     </section>
 
-    <!-- Tab: Privacy -->
     <section class="tab-content" id="tab-privacy">
         <h2 class="section-title">🔒 Bảo Vệ Dữ Liệu Cá Nhân</h2>
         <p class="section-desc">So sánh cách tiếp cận truyền thống vs. Federated Learning</p>
@@ -154,7 +151,12 @@
             </div>
         </div>
 
-        <!-- Interactive Privacy Demo -->
+        <div class="privacy-demo-card">
+            <h3>Điện thoại ↔ laptop</h3>
+            <p>Đồng bộ phiên — QR trong trang tiếp theo.</p>
+            <a class="btn-primary" href="live_privacy_dashboard.html" target="_blank" rel="noopener">Màn hình đồng bộ</a>
+        </div>
+
         <div class="privacy-demo-card">
             <h3>🛡️ Demo: Dữ Liệu Được Bảo Vệ Thế Nào?</h3>
             <p>Nhấn "Bắt Đầu" để xem quá trình huấn luyện Federated Learning hoạt động.</p>
@@ -165,6 +167,7 @@
                     <div class="server-label">FL Server</div>
                     <div class="server-info" id="serverInfo">Chờ model updates...</div>
                 </div>
+                <p class="fl-clients-caption">Thiết lập huấn luyện: <strong id="captionNumClients">40</strong> federated clients. Dưới đây minh họa <strong>3</strong> client để dễ xem luồng.</p>
                 <div class="fl-clients">
                     <div class="fl-client" id="client0">
                         <div class="client-icon">📱</div>
@@ -190,6 +193,14 @@
                 </div>
                 <div class="fl-packets" id="flPackets"></div>
             </div>
+            <div class="fl-log" id="flLogWrap" style="display:none">
+                <div class="fl-log-head">
+                    <strong>Log giả lập</strong>
+                    <span class="fl-log-hint">Mô phỏng output server/client khi chạy 3 rounds</span>
+                    <button type="button" class="fl-log-clear" id="btnFlLogClear">Clear</button>
+                </div>
+                <pre class="fl-log-body" id="flLog" aria-live="polite"></pre>
+            </div>
             <div class="dp-section">
                 <h4>🔐 Differential Privacy (DP-SGD)</h4>
                 <div class="dp-controls">
@@ -208,7 +219,6 @@
             </div>
         </div>
 
-        <!-- FedPer -->
         <div class="fedper-card">
             <h3>🧩 FedPer: Personalization + Privacy</h3>
             <div class="fedper-visual">
@@ -230,9 +240,123 @@
                 </div>
             </div>
         </div>
+
+        <div class="privacy-inspector-card">
+            <h3>🔍 Privacy Inspector: Server Thấy Gì?</h3>
+            <p class="section-desc">So sánh dữ liệu gốc của user vs. thông tin mà server nhận được. <strong>Server KHÔNG BAO GIỜ thấy dữ liệu thật.</strong></p>
+
+            <div class="inspector-grid">
+                <div class="inspector-col real-data-col">
+                    <div class="inspector-header real-header">
+                        <span class="inspector-icon">👤</span>
+                        <h4>Dữ Liệu Thật (Client)</h4>
+                        <span class="badge-local">🔒 LOCAL</span>
+                    </div>
+                    <div class="inspector-body">
+                        <div class="data-row">
+                            <span class="data-label">Tên user:</span>
+                            <span class="data-value">Nguyễn Văn A</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Review:</span>
+                            <span class="data-value">"Sản phẩm rất tốt, dùng 2 tuần da mịn hẳn"</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Rating:</span>
+                            <span class="data-value">⭐⭐⭐⭐⭐ (5/5)</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Sản phẩm:</span>
+                            <span class="data-value">CeraVe Moisturizer – $18.99</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Lịch sử mua:</span>
+                            <span class="data-value">12 sản phẩm Beauty, 3 Fashion</span>
+                        </div>
+                    </div>
+                    <div class="inspector-footer real-footer">
+                        ✅ Dữ liệu này KHÔNG BAO GIỜ rời khỏi thiết bị
+                    </div>
+                </div>
+
+                <div class="inspector-arrow">
+                    <div class="arrow-line"></div>
+                    <div class="arrow-label">
+                        <span class="arrow-process">Local Training</span>
+                        <span class="arrow-detail">+ DP Noise (ε=1.0)</span>
+                        <span class="arrow-detail">+ Gradient Clipping</span>
+                    </div>
+                    <div class="arrow-line"></div>
+                </div>
+
+                <div class="inspector-col server-data-col">
+                    <div class="inspector-header server-header">
+                        <span class="inspector-icon">🖥️</span>
+                        <h4>Server Nhận Được</h4>
+                        <span class="badge-encrypted">🔐 ENCRYPTED</span>
+                    </div>
+                    <div class="inspector-body">
+                        <div class="data-row obfuscated">
+                            <span class="data-label">Tên user:</span>
+                            <span class="data-value noise-text" id="noiseUser">██████████</span>
+                        </div>
+                        <div class="data-row obfuscated">
+                            <span class="data-label">Review:</span>
+                            <span class="data-value noise-text" id="noiseReview">██████████████████</span>
+                        </div>
+                        <div class="data-row obfuscated">
+                            <span class="data-label">Rating:</span>
+                            <span class="data-value noise-text" id="noiseRating">██████</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">Nhận được:</span>
+                            <span class="data-value weight-text">Δw = [0.0012, -0.0034, ...]</span>
+                        </div>
+                        <div class="data-row">
+                            <span class="data-label">+ DP Noise:</span>
+                            <span class="data-value weight-text" id="noiseWeights">𝒩(0, σ²) added to Δw</span>
+                        </div>
+                    </div>
+                    <div class="inspector-footer server-footer">
+                        🚫 Không thể suy ngược ra dữ liệu gốc từ weights
+                    </div>
+                </div>
+            </div>
+
+            <div class="gradient-comparison">
+                <h4>📊 So Sánh Gradient: Trước vs Sau Khi Thêm Noise</h4>
+                <div class="gradient-visual">
+                    <div class="gradient-col">
+                        <div class="gradient-title">Gradient Gốc (trên client)</div>
+                        <canvas id="gradientOriginal" height="120"></canvas>
+                        <div class="gradient-note">Có thể chứa thông tin về data</div>
+                    </div>
+                    <div class="gradient-arrow-small">
+                        <span>+ 𝒩(0, σ²)</span>
+                        <span class="dp-formula">σ = C · √(2ln(1.25/δ)) / ε</span>
+                    </div>
+                    <div class="gradient-col">
+                        <div class="gradient-title">Gradient + DP Noise (gửi server)</div>
+                        <canvas id="gradientNoised" height="120"></canvas>
+                        <div class="gradient-note safe-note">✅ Không thể phân biệt user nào</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="attack-demo">
+                <h4>⚔️ Thử Nghiệm Tấn Công: Khôi Phục Dữ Liệu Từ Weights</h4>
+                <p>Giả lập một cuộc tấn công reconstruction — kẻ tấn công thử khôi phục data gốc từ model weights nhận được.</p>
+                <button class="btn-attack" id="btnAttackDemo">🔓 Thử Tấn Công Reconstruction</button>
+                <div class="attack-result" id="attackResult" style="display:none">
+                    <div class="attack-progress" id="attackProgress">
+                        <div class="attack-bar" id="attackBar"></div>
+                    </div>
+                    <div class="attack-output" id="attackOutput"></div>
+                </div>
+            </div>
+        </div>
     </section>
 
-    <!-- Tab: Multi-Modal -->
     <section class="tab-content" id="tab-multimodal">
         <h2 class="section-title">🧠 Multi-Modal Adaptive Fusion</h2>
         <p class="section-desc">Mỗi user học trọng số riêng cho từng modality — tự động ưu tiên nguồn thông tin phù hợp nhất.</p>
@@ -298,7 +422,6 @@
         </div>
     </section>
 
-    <!-- Tab: Training Results -->
     <section class="tab-content" id="tab-training">
         <h2 class="section-title">📈 Kết Quả Huấn Luyện</h2>
         <p class="section-desc">100 rounds Federated Learning trên Amazon Reviews 2023</p>
@@ -310,7 +433,12 @@
             </div>
             <div class="chart-card">
                 <h4>Phân Bố Data Per Client</h4>
-                <canvas id="clientChart" height="250"></canvas>
+                <p class="chart-hint">Cuộn ngang nếu màn hình hẹp — biểu đồ hiển thị đủ <span id="clientChartHintN">40</span> client.</p>
+                <div class="chart-scroll-wrap">
+                    <div class="chart-inner-wide">
+                        <canvas id="clientChart" height="250"></canvas>
+                    </div>
+                </div>
             </div>
             <div class="chart-card">
                 <h4>Rating Distribution</h4>
@@ -333,7 +461,6 @@
         </div>
     </section>
 
-    <!-- Tab: Architecture -->
     <section class="tab-content" id="tab-architecture">
         <h2 class="section-title">🏗️ Kiến Trúc Hệ Thống</h2>
         <p class="section-desc">Tech stack và cấu trúc dự án</p>

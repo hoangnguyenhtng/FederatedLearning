@@ -1,14 +1,12 @@
 # Federated Learning Configuration
 federated:
   num_clients: 10
-  num_rounds: 100                # Increased from 50 (more training for better convergence)
-  
-  # Client selection
-  # Increased for better stability and evaluation accuracy
-  fraction_fit: 0.6              # 60% clients per round (6/10) - increased from 0.4
-  fraction_evaluate: 1.0         # 100% for evaluation (ALL 10) - CRITICAL for stable metrics!
-  min_fit_clients: 6             # Minimum clients for training - increased from 2
-  min_evaluate_clients: 10       # Evaluate ALL clients - increased from 2
+  num_rounds: 100                
+
+  fraction_fit: 0.6              
+  fraction_evaluate: 1.0         
+  min_fit_clients: 6             
+  min_evaluate_clients: 10       
   
   # FedPer specific
   shared_layers: 3               # Number of shared layers
@@ -104,7 +102,7 @@ training:
   local_epochs: 5                # Increased from 3 (more local learning per round)
   learning_rate: 0.0001          # Restored to 0.0001 (gradient clipping prevents NaN)
   optimizer: "adam"
-  weight_decay: 1e-4             # Increased from 1e-5 (more regularization)
+  weight_decay: 0.0001           # Increased from 1e-5 (use decimal; PyYAML may parse 1e-4 as str)
   gradient_clip: 1.0             # Clip gradients to prevent NaN
   
   # Learning rate schedule

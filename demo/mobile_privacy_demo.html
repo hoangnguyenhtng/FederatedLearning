@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+    <title>Client</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 1rem 1rem 2rem;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f172a; color: #e2e8f0; line-height: 1.45;
+            min-height: 100vh;
+        }
+        h1 { font-size: 1.2rem; margin: 0 0 0.75rem; font-weight: 700; letter-spacing: -0.02em; }
+        .pill {
+            display: inline-block; padding: 0.22rem 0.55rem; border-radius: 999px;
+            font-size: 0.68rem; font-weight: 600; margin-bottom: 0.65rem;
+        }
+        .pill-warn { background: rgba(245,158,11,0.18); color: #fcd34d; }
+        .pill-ok { background: rgba(16,185,129,0.18); color: #6ee7b7; }
+        code { font-size: 0.72rem; word-break: break-all; color: #a5b4fc; }
+        .muted { font-size: 0.78rem; color: #94a3b8; margin: 0.35rem 0 1rem; }
+
+        .rec-box {
+            border: 1px solid rgba(99,102,241,0.28); border-radius: 12px;
+            padding: 0.85rem 1rem; margin-bottom: 1rem;
+            background: rgba(99,102,241,0.06);
+        }
+        .rec-box h2 { font-size: 0.85rem; margin: 0 0 0.65rem; font-weight: 600; color: #c7d2fe; }
+        .rec-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.65rem; }
+        .rec-row label { font-size: 0.78rem; color: #94a3b8; }
+        #userId {
+            width: 4.5rem; padding: 0.45rem 0.5rem; border-radius: 8px;
+            border: 1px solid rgba(148,163,184,0.35); background: #1e293b; color: #f1f5f9;
+            font-size: 0.95rem;
+        }
+        #prefType {
+            flex: 1;
+            min-width: 10rem;
+            padding: 0.45rem 0.5rem;
+            border-radius: 8px;
+            border: 1px solid rgba(148,163,184,0.35);
+            background: #1e293b;
+            color: #f1f5f9;
+            font-size: 0.95rem;
+        }
+        #btnRec {
+            flex: 1; min-width: 8rem;
+            padding: 0.55rem 0.85rem; border: none; border-radius: 10px;
+            font-weight: 600; font-size: 0.88rem; cursor: pointer;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff;
+        }
+        #btnRec:disabled { opacity: 0.45; cursor: not-allowed; }
+        #recErr { font-size: 0.75rem; color: #f87171; margin-bottom: 0.5rem; min-height: 1em; }
+
+        .rec-note {
+            font-size: 0.68rem; color: #64748b; line-height: 1.35;
+            margin: 0 0 0.65rem; padding: 0.5rem 0.65rem;
+            border-radius: 8px; background: rgba(30,41,59,0.6);
+            border-left: 3px solid rgba(99,102,241,0.45);
+        }
+
+        #recList { display: flex; flex-direction: column; gap: 0.75rem; }
+
+        .product-card {
+            display: grid;
+            grid-template-columns: 5.5rem 1fr;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            border-radius: 14px;
+            background: linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.92));
+            border: 1px solid rgba(148,163,184,0.18);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+        }
+
+        .product-thumb {
+            width: 5.5rem; height: 5.5rem;
+            border-radius: 12px; overflow: hidden;
+            background: linear-gradient(135deg, #334155, #1e293b);
+            flex-shrink: 0;
+            position: relative;
+        }
+        .product-thumb img {
+            width: 100%; height: 100%; object-fit: cover;
+            display: block;
+        }
+        .product-thumb-ph {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.6rem; font-weight: 700; color: #64748b;
+        }
+
+        .product-body { min-width: 0; position: relative; padding-top: 0.1rem; }
+
+        .rank-badge {
+            position: absolute; top: 0; right: 0;
+            font-size: 0.65rem; font-weight: 700;
+            padding: 0.15rem 0.45rem; border-radius: 6px;
+            background: rgba(99,102,241,0.35); color: #e0e7ff;
+        }
+
+        .product-title {
+            font-size: 0.9rem; font-weight: 650; color: #f8fafc;
+            margin: 0 2.5rem 0.35rem 0;
+            line-height: 1.3;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.4rem; }
+        .chip {
+            font-size: 0.62rem; padding: 0.12rem 0.45rem; border-radius: 999px;
+            background: rgba(148,163,184,0.15); color: #cbd5e1;
+        }
+        .chip-brand { background: rgba(245,158,11,0.12); color: #fcd34d; }
+
+        .product-meta {
+            font-size: 0.72rem; color: #94a3b8;
+            display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+            margin-bottom: 0.45rem;
+        }
+        .price { font-weight: 600; color: #a5f3fc; }
+        .stars { color: #fbbf24; }
+
+        .score-wrap {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 0.35rem 0.5rem;
+            align-items: center;
+            margin-top: 0.15rem;
+        }
+        .score-label { font-size: 0.62rem; color: #64748b; grid-column: 1 / -1; }
+        .score-bar {
+            height: 6px; border-radius: 999px;
+            background: rgba(51,65,85,0.8); overflow: hidden;
+        }
+        .score-fill {
+            height: 100%; border-radius: 999px;
+            background: linear-gradient(90deg, #6366f1, #22d3ee);
+            transition: width 0.35s ease;
+        }
+        .score-num { font-size: 0.72rem; font-variant-numeric: tabular-nums; color: #94a3b8; }
+        .prob-hero {
+            font-size: 1.35rem; font-weight: 800; letter-spacing: -0.03em;
+            color: #e0e7ff; font-variant-numeric: tabular-nums;
+            line-height: 1;
+            margin-bottom: 0.35rem;
+        }
+        .prob-hero small {
+            font-size: 0.55rem; font-weight: 600; color: #64748b;
+            display: block; margin-top: 0.2rem;
+        }
+
+        button.scene {
+            display: block; width: 100%; margin: 0.45rem 0; padding: 0.75rem 0.9rem;
+            border: 1px solid rgba(148,163,184,0.2); border-radius: 10px;
+            font-size: 0.86rem; font-weight: 600; cursor: pointer; text-align: left;
+            background: rgba(30,41,59,0.85); color: #e2e8f0;
+        }
+        button.scene:disabled { opacity: 0.45; cursor: not-allowed; }
+        button.scene:not(:disabled) { border-color: rgba(13,148,136,0.45); }
+
+        .foot { margin-top: 1.25rem; font-size: 0.78rem; }
+        .foot a { color: #818cf8; text-decoration: none; }
+
+        .fl-box {
+            border: 1px solid rgba(16,185,129,0.35); border-radius: 12px;
+            padding: 0.85rem 1rem; margin-bottom: 1rem;
+            background: rgba(16,185,129,0.06);
+        }
+        .fl-box h2 { font-size: 0.85rem; margin: 0 0 0.65rem; font-weight: 600; color: #6ee7b7; }
+        #flReview {
+            width: 100%; min-height: 6.5rem; padding: 0.65rem 0.75rem;
+            border-radius: 10px; border: 1px solid rgba(148,163,184,0.35);
+            background: #1e293b; color: #f1f5f9; font-size: 0.88rem;
+            resize: vertical; font-family: inherit; line-height: 1.45;
+        }
+        #flReview:focus { outline: none; border-color: rgba(52,211,153,0.55); }
+        .fl-grid {
+            display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 0.65rem;
+            align-items: center; margin: 0.65rem 0;
+            font-size: 0.78rem; color: #94a3b8;
+        }
+        .fl-grid select, .fl-grid input[type="number"] {
+            padding: 0.4rem 0.5rem; border-radius: 8px;
+            border: 1px solid rgba(148,163,184,0.35); background: #1e293b; color: #f1f5f9;
+            font-size: 0.85rem;
+        }
+        #btnFlSend {
+            width: 100%; margin-top: 0.35rem; padding: 0.65rem 0.85rem;
+            border: none; border-radius: 10px; font-weight: 600; font-size: 0.88rem;
+            cursor: pointer;
+            background: linear-gradient(135deg, #059669, #10b981); color: #fff;
+        }
+        #btnFlSend:disabled { opacity: 0.45; cursor: not-allowed; }
+        #flErr { font-size: 0.72rem; color: #f87171; margin-top: 0.35rem; min-height: 1em; }
+        .byte-strip {
+            margin-top: 0.65rem; padding: 0.65rem 0.75rem;
+            border-radius: 10px; background: rgba(15,23,42,0.65);
+            border: 1px solid rgba(148,163,184,0.15);
+        }
+        .byte-row {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 0.5rem; font-size: 0.72rem; margin-bottom: 0.35rem;
+        }
+        .byte-row:last-child { margin-bottom: 0; }
+        .byte-row span:first-child { color: #94a3b8; }
+        .byte-row strong { font-variant-numeric: tabular-nums; color: #e2e8f0; }
+        .byte-bar {
+            height: 8px; border-radius: 999px; background: rgba(51,65,85,0.9);
+            overflow: hidden; margin-top: 0.45rem;
+        }
+        .byte-bar-local { height: 100%; background: rgba(245,158,11,0.65); border-radius: 999px; transition: width 0.4s ease; }
+        .byte-bar-up { height: 100%; background: rgba(99,102,241,0.75); border-radius: 999px; transition: width 0.4s ease; }
+        .byte-stack { display: flex; flex-direction: column; gap: 0.35rem; }
+
+        .pref-strip { margin-top: 0.65rem; padding: 0.65rem 0.75rem; border-radius: 10px; background: rgba(15,23,42,0.65); border: 1px solid rgba(148,163,184,0.15); }
+        .pref-row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; font-size: 0.72rem; margin-bottom: 0.35rem; }
+        .pref-row:last-child { margin-bottom: 0; }
+        .pref-row span { color: #94a3b8; }
+        .pref-row strong { font-variant-numeric: tabular-nums; color: #e2e8f0; }
+
+        .dom-chip {
+            font-size: 0.62rem; padding: 0.12rem 0.45rem; border-radius: 999px;
+            border: 1px solid rgba(148,163,184,0.25);
+            background: rgba(148,163,184,0.10); color: #cbd5e1;
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            white-space: nowrap;
+        }
+        .dom-chip-text { background: rgba(99,102,241,0.16); border-color: rgba(99,102,241,0.35); color: #c7d2fe; }
+        .dom-chip-image { background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.35); color: #fcd34d; }
+        .dom-chip-behavior { background: rgba(16,185,129,0.14); border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+
+        .match-chip {
+            background: rgba(16,185,129,0.14);
+            border-color: rgba(16,185,129,0.35);
+            color: #34d399;
+        }
+        .match-chip-bad {
+            background: rgba(248,113,113,0.14);
+            border-color: rgba(248,113,113,0.35);
+            color: #f87171;
+        }
+    </style>
+</head>
+<body>
+    <h1>Client</h1>
+    <div id="pill" class="pill pill-warn">…</div>
+    <div class="muted" id="sidLine"><code id="sid">—</code></div>
+
+    <div class="fl-box">
+        <h2>Vòng học FL</h2>
+        <textarea id="flReview" placeholder="Viết đánh giá sản phẩm trên máy bạn (chỉ lưu cục bộ cho đến khi bạn gửi cập nhật model)…"></textarea>
+        <div class="fl-grid">
+            <span>Sao</span>
+            <select id="flStars" aria-label="Số sao">
+                <option value="">— Không chọn —</option>
+                <option value="5">5 · Xuất sắc</option>
+                <option value="4">4 · Tốt</option>
+                <option value="3">3 · Ổn</option>
+                <option value="2">2 · Tệ</option>
+                <option value="1">1 · Rất tệ</option>
+            </select>
+            <span>Round</span>
+            <input type="number" id="flRound" min="1" step="1" value="1" />
+        </div>
+        <button type="button" id="btnFlSend" disabled>Gửi cập nhật model (FedAvg)</button>
+        <div id="flErr"></div>
+        <div id="flSummary" style="display:none" class="byte-strip"></div>
+    </div>
+
+    <div class="rec-box">
+        <h2>Gợi ý</h2>
+        <div class="rec-row">
+            <label for="userId">User</label>
+            <input type="number" id="userId" min="0" step="1" value="0" />
+            <button type="button" id="btnRec">Lấy gợi ý</button>
+        </div>
+        <div class="rec-row">
+            <label for="prefType">Sở thích</label>
+            <select id="prefType" aria-label="Sở thích modality">
+                <option value="balanced" selected>Cân bằng</option>
+                <option value="text_heavy">Ưu tiên Text</option>
+                <option value="image_heavy">Ưu tiên Image</option>
+                <option value="behavior_heavy">Ưu tiên Behavior</option>
+            </select>
+        </div>
+        <div class="muted" id="userRange" style="margin:-0.35rem 0 0.5rem;font-size:0.72rem"></div>
+        <div id="prefSummary" class="pref-strip" style="display:none"></div>
+        <p class="rec-note" id="recNote" style="display:none"></p>
+        <div id="recErr"></div>
+        <div id="recList"></div>
+    </div>
+
+    <button type="button" class="scene" id="b2" disabled>Luồng gợi ý (minh họa)</button>
+
+    <p class="foot"><a href="live_privacy_dashboard.html" id="dashLink">Đồng bộ</a></p>
+
+    <script>
+(function () {
+    function qs(name) {
+        return new URLSearchParams(location.search).get(name);
+    }
+
+    function formatBytes(n) {
+        n = Number(n) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KiB';
+        return (n / 1048576).toFixed(2) + ' MiB';
+    }
+
+    function buildFlRoundPayload() {
+        var ta = document.getElementById('flReview');
+        var err = document.getElementById('flErr');
+        if (!ta || !err) return null;
+        var review = ta.value.trim();
+        if (!review) {
+            err.textContent = 'Nhập đánh giá trước khi gửi.';
+            return null;
+        }
+        err.textContent = '';
+
+        var starsEl = document.getElementById('flStars');
+        var roundEl = document.getElementById('flRound');
+        var stars = starsEl && starsEl.value ? starsEl.value : '';
+        var roundNum = roundEl ? parseInt(roundEl.value, 10) : 1;
+        if (isNaN(roundNum) || roundNum < 1) roundNum = 1;
+
+        var localPlain = review + (stars ? '\nĐánh giá sao: ' + stars + '/5' : '');
+        var enc = new TextEncoder();
+        var localBytes = enc.encode(localPlain).length;
+
+        var deltaParams = 105000;
+        var deltaBytes = deltaParams * 4;
+        var metaObj = {
+            round: roundNum,
+            kind: 'fedavg_delta',
+            layers: ['shared.encoder', 'shared.head'],
+            dtype: 'float32',
+            params: deltaParams,
+        };
+        var metaBytes = enc.encode(JSON.stringify(metaObj)).length;
+        var uploadBytes = deltaBytes + metaBytes;
+
+        var preview =
+            review.length > 360 ? review.slice(0, 360).trim() + '…' : review;
+
+        var payload = {
+            type: 'privacy_exchange',
+            scenario_title: 'Vòng FL · round ' + roundNum,
+            phone_side: {
+                stay_local: [
+                    {
+                        label: 'Đánh giá (raw · chỉ trên máy)',
+                        text: preview + (stars ? '\n★ ' + stars + '/5' : ''),
+                    },
+                    {
+                        label: 'Kích thước dữ liệu nhạy cảm',
+                        text:
+                            formatBytes(localBytes) +
+                            ' (UTF-8) — không đính kèm trong payload lên server.',
+                    },
+                ],
+                leaves_device: [
+                    {
+                        label: 'Đã gửi đi (ước lượng)',
+                        text:
+                            formatBytes(uploadBytes) +
+                            ' — chỉ tensor cập nhật Δθ (shared), không gửi text đánh giá.',
+                    },
+                    {
+                        label: 'Chi tiết',
+                        text:
+                            formatBytes(metaBytes) +
+                            ' meta JSON + ' +
+                            formatBytes(deltaBytes) +
+                            ' (' +
+                            deltaParams.toLocaleString() +
+                            ' × float32)',
+                    },
+                ],
+            },
+            server_side: {
+                receives: [
+                    {
+                        label: 'Server nhận',
+                        text:
+                            formatBytes(uploadBytes) +
+                            ' để aggregate round ' +
+                            roundNum +
+                            ' — FedAvg trên Δθ. Không có review người dùng.',
+                    },
+                    {
+                        label: 'Server không nhận',
+                        text: 'Toàn bộ nội dung ô đánh giá phía client.',
+                    },
+                ],
+            },
+        };
+
+        return { payload: payload, localBytes: localBytes, uploadBytes: uploadBytes };
+    }
+
+    function renderFlByteSummary(localBytes, uploadBytes) {
+        var el = document.getElementById('flSummary');
+        if (!el) return;
+        var max = Math.max(localBytes, uploadBytes, 1);
+        var wLocal = Math.round((localBytes / max) * 100);
+        var wUp = Math.round((uploadBytes / max) * 100);
+        el.style.display = 'block';
+        el.innerHTML =
+            '<div class="byte-row"><span>🔒 Chỉ trên máy (raw)</span><strong>' +
+            formatBytes(localBytes) +
+            '</strong></div>' +
+            '<div class="byte-bar"><div class="byte-bar-local" style="width:' +
+            wLocal +
+            '%"></div></div>' +
+            '<div class="byte-stack">' +
+            '<div class="byte-row"><span>↑ Đã gửi lên server</span><strong>' +
+            formatBytes(uploadBytes) +
+            '</strong></div>' +
+            '<div class="byte-bar"><div class="byte-bar-up" style="width:' +
+            wUp +
+            '%"></div></div>' +
+            '</div>' +
+            '<p style="margin:0.5rem 0 0;font-size:0.65rem;color:#64748b;line-height:1.35">' +
+            'So sánh tương đối: raw review thường nhỏ hơn blob Δθ; server chỉ thấy phần gửi đi.' +
+            '</p>';
+    }
+
+    function payloadRec() {
+        return {
+            type: 'privacy_exchange',
+            scenario_title: 'Luồng gợi ý',
+            phone_side: {
+                stay_local: [
+                    { label: 'Local', text: 'Embedding / fusion trên máy trước khi gọi server.' },
+                ],
+                leaves_device: [
+                    { label: 'Gửi đi', text: 'Embedding + top_k + (tuỳ chọn) category' },
+                    { label: 'Không gửi', text: 'Full log click, gallery riêng tư.' },
+                ],
+            },
+            server_side: {
+                receives: [
+                    { label: 'Server', text: 'Embedding + top-K → ranking catalog.' },
+                    { label: 'Trả về', text: 'item_id + điểm.' },
+                ],
+            },
+        };
+    }
+
+    function buildRecommendPrivacyExchange(apiJson) {
+        var recs = apiJson.recommendations || [];
+        var receives = recs.slice(0, 8).map(function (r) {
+            var pct =
+                typeof r.probability_percent === 'number'
+                    ? r.probability_percent.toFixed(1) + '%'
+                    : (typeof r.score === 'number' ? (r.score * 100).toFixed(1) + '%' : '');
+            return {
+                label: '#' + r.rank + ' · ' + (r.category || ''),
+                text: (r.name || '') + ' · ' + pct,
+            };
+        });
+        if (!receives.length) {
+            receives = [{ label: '—', text: 'Không có mục gợi ý.' }];
+        }
+        return {
+            type: 'privacy_exchange',
+            scenario_title: 'Gợi ý · user ' + apiJson.user_id,
+            phone_side: {
+                stay_local: [
+                    {
+                        label: 'Trên máy',
+                        text: 'Ngữ cảnh user #' + apiJson.user_id + ' — không gửi review/thẻ thanh toán.',
+                    },
+                ],
+                leaves_device: [
+                    {
+                        label: 'Yêu cầu',
+                        text: 'POST /recommend · user_id=' + apiJson.user_id + ', top_k=' + recs.length,
+                    },
+                ],
+            },
+            server_side: { receives: receives },
+        };
+    }
+
+    var sessionId = qs('session');
+    if (!sessionId || !/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) {
+        document.getElementById('sid').textContent = 'Thiếu session';
+        document.getElementById('pill').textContent = 'Chưa có phiên';
+    } else {
+        document.getElementById('sid').textContent = sessionId;
+        var dl = document.getElementById('dashLink');
+        var u = new URL('live_privacy_dashboard.html', location.href);
+        u.searchParams.set('session', sessionId);
+        dl.href = u.href;
+
+        function setPill(ok, text) {
+            var p = document.getElementById('pill');
+            p.textContent = text;
+            p.className = 'pill ' + (ok ? 'pill-ok' : 'pill-warn');
+        }
+
+        var ws;
+        var pingT = null;
+
+        function setActionsEnabled(on) {
+            var bf = document.getElementById('btnFlSend');
+            if (bf) bf.disabled = !on;
+            document.getElementById('b2').disabled = !on;
+        }
+
+        function connect() {
+            if (pingT) {
+                clearInterval(pingT);
+                pingT = null;
+            }
+            if (ws) {
+                try {
+                    ws.close();
+                } catch (e) {}
+            }
+            var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            var url = proto + '//' + location.host + '/ws/privacy-demo/' + encodeURIComponent(sessionId) + '?role=phone';
+            ws = new WebSocket(url);
+            setPill(false, 'Đang kết nối…');
+            setActionsEnabled(false);
+
+            ws.onopen = function () {
+                setPill(true, 'Đã kết nối');
+                setActionsEnabled(true);
+                pingT = setInterval(function () {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'ping' }));
+                        } catch (e) {}
+                    }
+                }, 20000);
+            };
+            ws.onclose = function (ev) {
+                if (pingT) {
+                    clearInterval(pingT);
+                    pingT = null;
+                }
+                var c = ev && ev.code ? ' · ' + ev.code : '';
+                setPill(false, 'Ngắt' + c);
+                setActionsEnabled(false);
+            };
+            ws.onerror = function () {
+                setPill(false, 'Lỗi kết nối');
+            };
+            ws.onmessage = function (ev) {
+                try {
+                    var msg = JSON.parse(ev.data);
+                    if (msg.type === 'pong') return;
+                    if (msg.type === 'system') {
+                        document.getElementById('sidLine').title = msg.message || '';
+                    }
+                } catch (e) {}
+            };
+        }
+
+        function sendWs(obj) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify(obj));
+        }
+
+        function formatMoney(n) {
+            if (n == null || n <= 0 || isNaN(n)) return '';
+            try {
+                return new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                    maximumFractionDigits: 2,
+                }).format(n);
+            } catch (e) {
+                return String(n);
+            }
+        }
+
+        function renderRecList(data) {
+            var box = document.getElementById('recList');
+            var noteEl = document.getElementById('recNote');
+            var prefEl = document.getElementById('prefSummary');
+            box.innerHTML = '';
+            var recs = data.recommendations || [];
+
+            // Preference summary (text/image/behavior) + check match ✓/✗
+            var prefType =
+                document.getElementById('prefType') && document.getElementById('prefType').value
+                    ? document.getElementById('prefType').value
+                    : data.user_preference_type || '';
+            var fusion = data.fusion_weights || {};
+            var wText = typeof fusion.text === 'number' ? fusion.text : 0;
+            var wImage = typeof fusion.image === 'number' ? fusion.image : 0;
+            var wBehavior = typeof fusion.behavior === 'number' ? fusion.behavior : 0;
+            var weightsArr = [wText, wImage, wBehavior];
+            var wMax = Math.max.apply(null, weightsArr);
+            var actualDominant = wMax === wText ? 'text' : wMax === wImage ? 'image' : 'behavior';
+
+            function expectedDominantFromPreference(pt) {
+                if (pt === 'text_heavy') return 'text';
+                if (pt === 'image_heavy') return 'image';
+                if (pt === 'behavior_heavy') return 'behavior';
+                if (pt === 'balanced') return null;
+                return null;
+            }
+
+            function computeStd(arr) {
+                var mean = (arr[0] + arr[1] + arr[2]) / 3;
+                var v =
+                    ((arr[0] - mean) * (arr[0] - mean) +
+                        (arr[1] - mean) * (arr[1] - mean) +
+                        (arr[2] - mean) * (arr[2] - mean)) /
+                    3;
+                return Math.sqrt(v);
+            }
+
+            var expected = expectedDominantFromPreference(prefType);
+            var weightStd = computeStd(weightsArr);
+            var isMatch =
+                prefType === 'balanced'
+                    ? weightStd < 0.1
+                    : expected
+                      ? actualDominant === expected && wMax > 0.34
+                      : null;
+
+            if (prefEl) {
+                var expectedLabel = expected === 'text' ? 'Text' : expected === 'image' ? 'Image' : expected === 'behavior' ? 'Behavior' : '—';
+                var actualLabel = actualDominant === 'text' ? 'Text' : actualDominant === 'image' ? 'Image' : 'Behavior';
+                var domChipCls = actualDominant === 'text' ? 'dom-chip-text' : actualDominant === 'image' ? 'dom-chip-image' : 'dom-chip-behavior';
+                var matchChipCls = isMatch == null ? '' : isMatch ? 'match-chip' : 'match-chip-bad';
+                var prefFriendly =
+                    prefType === 'text_heavy'
+                        ? 'Ưu tiên Text'
+                        : prefType === 'image_heavy'
+                          ? 'Ưu tiên Image'
+                          : prefType === 'behavior_heavy'
+                            ? 'Ưu tiên Behavior'
+                            : prefType === 'balanced'
+                              ? 'Cân bằng'
+                              : prefType || '—';
+
+                var wTextPct = (wText * 100).toFixed(0);
+                var wImagePct = (wImage * 100).toFixed(0);
+                var wBehaviorPct = (wBehavior * 100).toFixed(0);
+
+                prefEl.style.display = 'block';
+                prefEl.innerHTML =
+                    '<div class="pref-row"><span>Hứng thú (preference)</span><strong>' +
+                    prefFriendly +
+                    '</strong></div>' +
+                    '<div class="pref-row"><span>Fusion weights</span><strong>Text ' +
+                    wTextPct +
+                    '% · Image ' +
+                    wImagePct +
+                    '% · Behavior ' +
+                    wBehaviorPct +
+                    '%</strong></div>' +
+                    '<div class="pref-row" style="margin-bottom:0;">' +
+                    '<span>Dominant</span>' +
+                    '<strong style="display:flex;align-items:center;gap:0.4rem;justify-content:flex-end;">' +
+                    '<span class="dom-chip ' +
+                    domChipCls +
+                    '"> ' +
+                    actualLabel +
+                    ' </span>' +
+                    (isMatch == null
+                        ? ''
+                        : '<span class="dom-chip ' + matchChipCls + '"> ' + (isMatch ? '✓ khớp' : '✗ không khớp') + '</span>') +
+                    '</strong></div>';
+            }
+
+            var maxPct = 0;
+            recs.forEach(function (r) {
+                var p = typeof r.probability_percent === 'number' ? r.probability_percent : r.score * 100;
+                if (p > maxPct) maxPct = p;
+            });
+            if (maxPct <= 0) maxPct = 1;
+
+            if (noteEl) {
+                noteEl.style.display = recs.length ? 'block' : 'none';
+                noteEl.textContent =
+                    data.score_explanation ||
+                    'Điểm hiển thị là xác suất (%) sau softmax trên các lớp đầu ra của model.';
+            }
+
+            recs.forEach(function (r) {
+                var tC = typeof r.text_contribution === 'number' ? r.text_contribution : 0;
+                var iC = typeof r.image_contribution === 'number' ? r.image_contribution : 0;
+                var bC = typeof r.behavior_contribution === 'number' ? r.behavior_contribution : 0;
+                var cMax = Math.max(tC, iC, bC);
+                var dom = cMax === tC ? 'text' : cMax === iC ? 'image' : 'behavior';
+                var domLabel = dom === 'text' ? 'Text' : dom === 'image' ? 'Image' : 'Behavior';
+                var domChipCls = dom === 'text' ? 'dom-chip-text' : dom === 'image' ? 'dom-chip-image' : 'dom-chip-behavior';
+                var itemMatch =
+                    prefType === 'balanced'
+                        ? weightStd < 0.1
+                        : expected
+                          ? dom === expected && cMax > 0.34
+                          : null;
+                var matchChipCls = itemMatch == null ? '' : itemMatch ? 'match-chip' : 'match-chip-bad';
+
+                var pctDisplay =
+                    typeof r.probability_percent === 'number'
+                        ? r.probability_percent
+                        : Math.round(r.score * 10000) / 100;
+                var barW = Math.min(100, Math.round((pctDisplay / maxPct) * 100));
+                var url = r.image_url ? String(r.image_url).trim() : '';
+                var initial = (r.name || '?').charAt(0).toUpperCase();
+                var priceStr = formatMoney(r.price);
+                var brand = r.brand ? String(r.brand).trim() : '';
+                var avg = typeof r.avg_rating === 'number' && r.avg_rating > 0;
+
+                var art = document.createElement('article');
+                art.className = 'product-card';
+                art.innerHTML =
+                    '<div class="product-thumb">' +
+                    (url
+                        ? '<img src="' +
+                          escapeHtml(url) +
+                          '" alt="" loading="lazy" referrerpolicy="no-referrer" decoding="async" onerror="this.style.display=\'none\';var p=this.nextElementSibling;if(p)p.style.display=\'flex\'">' +
+                          '<div class="product-thumb-ph" style="display:none">' +
+                          escapeHtml(initial) +
+                          '</div>'
+                        : '<div class="product-thumb-ph">' + escapeHtml(initial) + '</div>') +
+                    '</div>' +
+                    '<div class="product-body">' +
+                    '<span class="rank-badge">#' +
+                    r.rank +
+                    '</span>' +
+                    '<h3 class="product-title">' +
+                    escapeHtml(String(r.name || '')) +
+                    '</h3>' +
+                    '<div class="chips">' +
+                    '<span class="chip">' +
+                    escapeHtml(String(r.category || '—')) +
+                    '</span>' +
+                    (brand
+                        ? '<span class="chip chip-brand">' + escapeHtml(brand) + '</span>'
+                        : '') +
+                    '</div>' +
+                    '<div class="product-meta">' +
+                    (priceStr ? '<span class="price">' + escapeHtml(priceStr) + '</span>' : '') +
+                    (avg
+                        ? '<span class="stars">★ ' + r.avg_rating.toFixed(1) + '</span>'
+                        : '') +
+                    '</div>' +
+                    '<div class="prob-hero">' +
+                    pctDisplay.toFixed(1) +
+                    '%<small>Xác suất · softmax · K=' +
+                    (data.output_classes || '?') +
+                    ' lớp</small>' +
+                    '<small style="margin-top:0.25rem;display:block;">' +
+                    (expected
+                        ? 'Chi phối: ' + domLabel + ' · ' + (itemMatch ? '✓ khớp' : '✗ không khớp')
+                        : 'Chi phối: ' + domLabel) +
+                    '</small></div>' +
+                    '<div class="score-wrap">' +
+                    '<span class="score-label">So sánh trong top (thanh tương đối)</span>' +
+                    '<div class="score-bar"><div class="score-fill" style="width:' +
+                    barW +
+                    '%"></div></div>' +
+                    '<span class="score-num">' +
+                    Number(r.score).toFixed(4) +
+                    '</span>' +
+                    '</div>' +
+                    '</div>';
+                box.appendChild(art);
+            });
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        document.getElementById('btnRec').addEventListener('click', function () {
+            document.getElementById('recErr').textContent = '';
+            var uid = parseInt(document.getElementById('userId').value, 10);
+            if (isNaN(uid) || uid < 0) {
+                document.getElementById('recErr').textContent = 'User không hợp lệ.';
+                return;
+            }
+            var btn = document.getElementById('btnRec');
+            btn.disabled = true;
+            fetch('/recommend', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: uid, top_k: 8, explain: true }),
+            })
+                .then(function (r) {
+                    return r.json().then(function (j) {
+                        if (!r.ok) {
+                            var d = j.detail;
+                            var msg =
+                                typeof d === 'string'
+                                    ? d
+                                    : Array.isArray(d)
+                                      ? d.map(function (x) { return x.msg || x; }).join('; ')
+                                      : r.statusText || 'Lỗi';
+                            throw new Error(msg);
+                        }
+                        return j;
+                    });
+                })
+                .then(function (data) {
+                    renderRecList(data);
+                    sendWs(buildRecommendPrivacyExchange(data));
+                })
+                .catch(function (e) {
+                    document.getElementById('recErr').textContent =
+                        e.message || 'Không gọi được API — kiểm tra model đã load.';
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                });
+        });
+
+        document.getElementById('btnFlSend').addEventListener('click', function () {
+            var pack = buildFlRoundPayload();
+            if (!pack) return;
+            sendWs(pack.payload);
+            renderFlByteSummary(pack.localBytes, pack.uploadBytes);
+
+            // Optional: show recommendation + preference match immediately for selected User
+            try {
+                var uid = parseInt(document.getElementById('userId').value, 10);
+                if (!isNaN(uid) && uid >= 0) {
+                    fetch('/recommend', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_id: uid, top_k: 8, explain: true }),
+                    })
+                        .then(function (r) {
+                            return r.json().then(function (j) {
+                                if (!r.ok) throw new Error(j.detail || 'Lỗi /recommend');
+                                return j;
+                            });
+                        })
+                        .then(function (data) {
+                            renderRecList(data);
+                        })
+                        .catch(function (e) {});
+                }
+            } catch (e) {}
+        });
+        document.getElementById('b2').addEventListener('click', function () {
+            sendWs(payloadRec());
+        });
+
+        connect();
+    }
+
+    fetch('/health')
+        .then(function (r) {
+            return r.json();
+        })
+        .then(function (h) {
+            var inp = document.getElementById('userId');
+            var hint = document.getElementById('userRange');
+            if (!inp || !hint || h.num_users == null) return;
+            var max = Math.max(0, parseInt(h.num_users, 10) - 1);
+            inp.max = max;
+            hint.textContent = 'Chỉ số API: 0–' + max + ' (khác client FL)';
+        })
+        .catch(function () {});
+})();
+    </script>
+</body>
+</html>

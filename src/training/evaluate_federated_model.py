@@ -1,13 +1,4 @@
-"""
-Evaluation Script for Federated Multi-Modal Recommendation (Amazon Reviews 2023)
-
-FIXED VERSION — aligned with:
-- `src/training/federated_training_pipeline.py` (model creation + checkpoint format)
-- `src/data_generation/amazon_dataloader.py` (Amazon per-client data)
-- `src/models/recommendation_model.py` (FedPerRecommender with num_classes=5)
-
-It evaluates the *global* checkpoint (shared + personal head as saved) on each client test split.
-"""
+"""Đánh giá checkpoint federated trên từng client (Amazon hoặc synthetic)."""
 
 from __future__ import annotations
 
@@ -23,7 +14,6 @@ import torch
 import torch.nn as nn
 import yaml
 
-# ── path setup ────────────────────────────────────────────────────────
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -38,9 +28,6 @@ from src.training.training_utils import (
 )
 
 
-# =====================================================================
-# Helper: build model from config (same logic as pipeline)
-# =====================================================================
 def _build_model(model_cfg: dict) -> FedPerRecommender:
     """Create FedPerRecommender identical to training pipeline."""
     encoder = MultiModalEncoder(
@@ -61,9 +48,6 @@ def _build_model(model_cfg: dict) -> FedPerRecommender:
     )
 
 
-# =====================================================================
-# Core evaluator
-# =====================================================================
 class FederatedEvaluator:
     """Evaluate federated model performance across clients."""
 
@@ -81,12 +65,10 @@ class FederatedEvaluator:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Resolve experiment dir
         if experiment_dir:
             self.experiment_dir = Path(experiment_dir)
         else:
             base = experiments_base_dir(self.config, cwd=project_root)
-            # Pick most-recent experiment folder
             candidates = sorted(base.glob("fedper_*"), key=lambda p: p.stat().st_mtime, reverse=True)
             if candidates:
                 self.experiment_dir = candidates[0]
@@ -99,13 +81,11 @@ class FederatedEvaluator:
         print(f"   Experiment: {self.experiment_dir}")
         print(f"   Device: {self.device}")
 
-    # ── load model ────────────────────────────────────────────────────
     def load_model(self, checkpoint_path: Optional[str] = None) -> nn.Module:
         """Load trained model from checkpoint (auto-detect if path not given)."""
         model = _build_model(self.config.get("model", {}))
         model.to(self.device)
 
-        # Auto-detect checkpoint
         if checkpoint_path is None:
             ckpt_candidates = sorted(
                 self.experiment_dir.glob("**/global_model_final.pt"),
@@ -113,7 +93,6 @@ class FederatedEvaluator:
                 reverse=True,
             )
             if not ckpt_candidates:
-                # Also try broader search
                 base = experiments_base_dir(self.config, cwd=project_root)
                 ckpt_candidates = sorted(
                     base.glob("**/global_model_final.pt"),
@@ -133,7 +112,6 @@ class FederatedEvaluator:
         model.eval()
         return model
 
-    # ── load dataloaders ──────────────────────────────────────────────
     def _load_dataloaders(self) -> Dict[int, tuple]:
         """Load federated dataloaders (Amazon or synthetic)."""
         num_clients = self.config["federated"]["num_clients"]
@@ -145,6 +123,17 @@ class FederatedEvaluator:
         if amazon_dir is not None:
             print(f"📂 Using Amazon data: {amazon_dir}")
             from src.data_generation.amazon_dataloader import get_amazon_dataloaders
+
+            # Nhiều người train với config 40 client nhưng chạy report với config.yaml (10).
+            # Nếu trên đĩa có nhiều client_*/data.pkl hơn num_clients trong YAML → dùng hết cho báo cáo.
+            n_on_disk = sum(1 for _ in amazon_dir.glob("client_*/data.pkl"))
+            if n_on_disk > num_clients:
+                print(
+                    f"📊 Config có num_clients={num_clients}, nhưng tìm thấy {n_on_disk} file data.pkl — "
+                    f"dùng {n_on_disk} client cho evaluation/report."
+                )
+                num_clients = n_on_disk
+
             return get_amazon_dataloaders(
                 num_clients=num_clients,
                 data_dir=str(amazon_dir),
@@ -152,7 +141,6 @@ class FederatedEvaluator:
                 test_split=test_split,
             )
 
-        # Synthetic fallback
         paths_cfg = self.config.get("paths") or {}
         synthetic_dir = (project_root / paths_cfg.get("data_dir", "data") / "simulated_clients").resolve()
         if synthetic_dir.exists():
@@ -175,7 +163,6 @@ class FederatedEvaluator:
             f"  Checked: {amazon_dir}, {synthetic_dir}"
         )
 
-    # ── evaluate single client ────────────────────────────────────────
     def _evaluate_client(
         self,
         model: nn.Module,
@@ -193,9 +180,7 @@ class FederatedEvaluator:
 
         with torch.no_grad():
             for batch_data in test_loader:
-                # ── Parse batch (dict or tuple) ──
                 if isinstance(batch_data, dict):
-                    # Get image embedding
                     if "image_embedding" in batch_data:
                         image_emb = batch_data["image_embedding"].to(self.device)
                     elif "image_features" in batch_data:
@@ -208,7 +193,6 @@ class FederatedEvaluator:
                     labels = batch_data.get("label", batch_data["rating"] - 1).to(self.device)
                     labels = torch.clamp(labels, 0, 4)
 
-                    # Fix behavior dim
                     bs = behavior_feat.shape[0]
                     if behavior_feat.shape[-1] != 32:
                         if behavior_feat.shape[-1] < 32:
@@ -217,13 +201,11 @@ class FederatedEvaluator:
                         else:
                             behavior_feat = behavior_feat[:, :32]
 
-                    # Text embedding
                     if "text_embedding" in batch_data:
                         text_emb = batch_data["text_embedding"].to(self.device)
                     else:
                         text_emb = torch.randn(bs, 384, device=self.device)
 
-                    # Fix image dim → 2048
                     if image_emb.shape[-1] != 2048:
                         image_emb = torch.randn(bs, 2048, device=self.device)
                 else:
@@ -233,7 +215,6 @@ class FederatedEvaluator:
                     labels = batch_data[3].to(self.device)
                     labels = torch.clamp(labels, 0, 4)
 
-                # Forward
                 logits = model(text_emb, image_emb, behavior_feat)
                 num_classes = logits.shape[1]
                 labels_clamped = torch.clamp(labels, 0, num_classes - 1)
@@ -251,7 +232,6 @@ class FederatedEvaluator:
         avg_loss = total_loss / max(len(test_loader), 1)
         accuracy = correct / max(total, 1)
 
-        # Compute extended metrics
         all_preds_t = torch.cat(all_preds) if all_preds else torch.zeros(1, 5)
         all_targets_t = torch.cat(all_targets) if all_targets else torch.zeros(1).long()
 
@@ -261,7 +241,6 @@ class FederatedEvaluator:
             "num_samples": total,
         }
 
-        # Extra metrics
         try:
             extra = calculate_metrics(all_preds_t, all_targets_t, compute_all=True)
             metrics.update(extra)
@@ -270,7 +249,6 @@ class FederatedEvaluator:
 
         return metrics
 
-    # ── evaluate all clients ──────────────────────────────────────────
     def evaluate_all_clients(
         self,
         model: nn.Module,
@@ -304,7 +282,6 @@ class FederatedEvaluator:
 
         return results
 
-    # ── generate report ───────────────────────────────────────────────
     def generate_report(
         self,
         results: List[Dict],
@@ -319,7 +296,6 @@ class FederatedEvaluator:
             print("⚠️  No results to report")
             return {}
 
-        # Aggregate
         accuracies = [r["accuracy"] for r in results]
         losses = [r["loss"] for r in results]
 
@@ -336,19 +312,16 @@ class FederatedEvaluator:
             "per_client": results,
         }
 
-        # Add optional metrics if available
         for metric_name in ["precision", "recall", "ndcg@10", "mrr"]:
             vals = [r.get(metric_name) for r in results if r.get(metric_name) is not None]
             if vals:
                 report["overall_metrics"][f"mean_{metric_name}"] = float(np.mean(vals))
 
-        # Save JSON
         report_path = save_dir / "evaluation_report.json"
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
         print(f"\n📝 Report saved: {report_path}")
 
-        # Save CSV
         try:
             import pandas as pd
             df = pd.DataFrame(results)
@@ -360,7 +333,6 @@ class FederatedEvaluator:
 
         return report
 
-    # ── visualize ─────────────────────────────────────────────────────
     def visualize_results(
         self,
         results: List[Dict],
@@ -380,7 +352,6 @@ class FederatedEvaluator:
             accuracies = [r["accuracy"] for r in results]
             losses = [r["loss"] for r in results]
 
-            # 1. Per-client accuracy
             axes[0].bar(client_ids, accuracies, color="#4ECDC4", edgecolor="#333")
             axes[0].axhline(y=np.mean(accuracies), color="r", linestyle="--",
                             label=f"Mean: {np.mean(accuracies):.3f}")
@@ -390,7 +361,6 @@ class FederatedEvaluator:
             axes[0].legend()
             axes[0].grid(axis="y", alpha=0.3)
 
-            # 2. Per-client loss
             axes[1].bar(client_ids, losses, color="#FF6B6B", edgecolor="#333")
             axes[1].axhline(y=np.mean(losses), color="r", linestyle="--",
                             label=f"Mean: {np.mean(losses):.3f}")
@@ -400,7 +370,6 @@ class FederatedEvaluator:
             axes[1].legend()
             axes[1].grid(axis="y", alpha=0.3)
 
-            # 3. Accuracy distribution
             metrics_names = ["accuracy"]
             metric_vals = [accuracies]
             for m in ["precision", "recall"]:
@@ -426,9 +395,6 @@ class FederatedEvaluator:
             print(f"⚠️  Could not create plots: {e}")
 
 
-# =====================================================================
-# Main
-# =====================================================================
 def main():
     parser = argparse.ArgumentParser(description="Evaluate federated model")
     parser.add_argument("--config", type=str, default="configs/config.yaml",
@@ -448,23 +414,18 @@ def main():
         experiment_dir=args.experiment_dir,
     )
 
-    # Load model
     model = evaluator.load_model(checkpoint_path=args.checkpoint)
 
-    # Evaluate
     results = evaluator.evaluate_all_clients(model)
 
     if not results:
         print("\n❌ No results — check data availability")
         return
 
-    # Report
     report = evaluator.generate_report(results)
 
-    # Visualize
     evaluator.visualize_results(results)
 
-    # Summary
     print("\n" + "=" * 70)
     print("EVALUATION SUMMARY")
     print("=" * 70)

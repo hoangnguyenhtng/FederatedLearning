@@ -38,6 +38,16 @@ class AmazonDataset(Dataset):
         image_emb = torch.nan_to_num(image_emb, nan=0.0, posinf=0.0, neginf=0.0)
         behavior_feat = torch.nan_to_num(behavior_feat, nan=0.0, posinf=0.0, neginf=0.0)
         
+        # ✅ FIX: Normalize behavior features to similar scale as text/image
+        # Raw behavior features have mean=17.6, std=231.8 → dominates gradients
+        # Text/image embeddings are ~N(0, 0.05-0.1)
+        # Clip outliers at ±3 std, then standardize
+        behavior_feat = torch.clamp(behavior_feat, -500.0, 500.0)  # clip extreme outliers
+        bfeat_mean = behavior_feat.mean()
+        bfeat_std = behavior_feat.std() + 1e-8
+        behavior_feat = (behavior_feat - bfeat_mean) / bfeat_std  # standardize to N(0,1)
+        behavior_feat = behavior_feat * 0.1  # scale down to match text/image magnitude
+        
         return {
             'user_id': torch.tensor(hash(str(row['user_id'])) % 100000, dtype=torch.long),
             'item_id': torch.tensor(hash(str(row['item_id'])) % 100000, dtype=torch.long),

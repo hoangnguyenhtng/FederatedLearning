@@ -64,11 +64,9 @@ class LocalTrainer:
         self.optimizer = self._setup_optimizer()
         
         # Loss function
-        class_counts = torch.tensor([0.04, 1.5, 15.9, 50.6, 31.7])  # From your data
-        class_weights = 100.0 / class_counts  # Inverse weights
-        class_weights = class_weights / class_weights.sum() * 5  # Normalize
-
-        print(f"[Client {self.client_id}] Using class weights: {class_weights}")
+        class_counts = torch.tensor([0.04 + 1.0, 1.5 + 1.0, 15.9 + 1.0, 50.6 + 1.0, 31.7 + 1.0])
+        class_weights = 1.0 / torch.log1p(class_counts)
+        class_weights = class_weights / class_weights.sum() * len(class_weights)
 
         self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
         

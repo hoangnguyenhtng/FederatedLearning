@@ -37,32 +37,28 @@ model:
   shared_hidden_dims: [512, 256, 128]
   
   # Personal head (domain-specific)
-  personal_hidden_dim: 64
+  personal_hidden_dim: 128
   num_classes: 5               # 5-star rating
   
   # Regularization
-  dropout: 0.3                 # Higher for multi-domain generalization
+  dropout: 0.2                 # Reduced from 0.3 for better learning
   
-  # Multi-modal e
-  
-  
-  
-  
-  
-  hjghjjkklncoder
-  multimodanhjjjjl_hidden_dim: 256
+  # Multi-modal encoder dimensions
+  multimodal_hidden_dim: 256
   multimodal_output_dim: 384
 
 # Training configuration
 training:
   # Batch & epochs
   batch_size: 32               # Stable with gradient clipping
-  local_epochs: 5              # More local learning
+  local_epochs: 5              # More local learning per round
+  personalize_epochs_eval: 3   # FedPer: adapt personal head before test eval
+  loss: focal                  # focal | weighted_ce
   
   # Optimization
-  learning_rate: 0.0001        # Standard rate (safe with clipping)
+  learning_rate: 0.001         # Stable for FedPer + focal loss
   optimizer: "adam"
-  weight_decay: 1e-4           # Regularization for generalization
+  weight_decay: 0.0001         # Regularization (use decimal; PyYAML may parse 1e-4 as str)
   gradient_clip: 1.0           # Prevent NaN
   
   # Learning rate scheduler (NEW for long training)
@@ -70,7 +66,7 @@ training:
   scheduler_type: "cosine"     # Smooth decay over 100 rounds
   scheduler_params:
     T_max: 100                 # Match num_rounds
-    eta_min: 0.00001           # Final LR
+    eta_min: 0.0001          
   
   # Data
   test_split: 0.2
@@ -110,7 +106,7 @@ data_generation:
     Baby_Products: 60000     # ~16.7 hours
   
   # Non-IID settings
-  alpha: 0.5                   # Dirichlet concentration
+  alpha: 1                
   min_samples_per_client: 300  # Reduced for smaller dataset
   
   # Category distribution

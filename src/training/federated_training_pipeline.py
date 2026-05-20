@@ -39,6 +39,9 @@ from src.training.training_utils import (
     setup_logging,
     resolve_amazon_federated_data_dir,
     experiments_base_dir,
+    config_float,
+    config_int,
+    normalize_training_config,
 )
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -106,6 +109,7 @@ class FederatedTrainingPipeline:
             experiment_dir: Directory to save experiments
         """
         self.config = config
+        normalize_training_config(self.config)
         self.experiment_dir = experiment_dir
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -116,13 +120,20 @@ class FederatedTrainingPipeline:
         
         for dir_path in [self.models_dir, self.logs_dir, self.metrics_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
+
+        self.client_states_dir = experiment_dir / "client_states"
+        self.client_states_dir.mkdir(parents=True, exist_ok=True)
+        self._loader_cache: Dict[int, Tuple] = {}
         
-        # Initialize components
+        # ── LAZY LOADING: validate data & store metadata only ──────────
+        # Do NOT pre-load all clients into RAM (would be ~4.7 GB) and
+        # then have Ray serialize it through the object store (another copy).
+        # Instead, each Ray actor loads its own client slice on demand.
+        self._setup_data_lazy()
         self.global_model = self._create_model()
-        self.dataloaders = self._load_data()
         
         logger.info(f"🖥️  Using device: {self.device}")
-        logger.info(f"📊 Number of clients: {len(self.dataloaders)}")
+        logger.info(f"📊 Number of clients: {self.num_clients} | data: {self.data_dir}") 
     
     def _create_model(self) -> nn.Module:
         """
@@ -182,98 +193,67 @@ class FederatedTrainingPipeline:
         
         return model
     
-    def _load_data(self) -> Dict[int, Tuple[DataLoader, DataLoader]]:
-        """Load federated dataloaders - Auto-detect Amazon or Synthetic data"""
-        logger.info("📂 Loading federated data...")
+    def _setup_data_lazy(self):
+        """Validate data exists and store metadata only — NO pre-loading.
         
-        num_clients = self.config['federated']['num_clients']
-        batch_size = self.config['training']['batch_size']
-        test_split = self.config['training'].get('test_split', 0.2)
+        Ray actors will load each client's pickle on-demand inside _client_fn,
+        so we never serialize 4.7 GB of DataLoaders through the object store.
+        """
+        logger.info("📂 Validating federated data (lazy mode)...")
         
+        self.num_clients  = self.config['federated']['num_clients']
+        self.batch_size   = self.config['training']['batch_size']
+        self.test_split   = self.config['training'].get('test_split', 0.2)
+        self.use_synthetic = False
+
         amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
-        paths_cfg = self.config.get('paths') or {}
-        synthetic_dir = (project_root / paths_cfg.get('data_dir', 'data') / 'simulated_clients').resolve()
+        paths_cfg  = self.config.get('paths') or {}
+        synthetic_dir = (
+            project_root / paths_cfg.get('data_dir', 'data') / 'simulated_clients'
+        ).resolve()
 
         if amazon_dir is not None:
-            logger.info(f"🎉 Using AMAZON / processed pickles: {amazon_dir}")
-            from src.data_generation.amazon_dataloader import get_amazon_dataloaders
-
-            dataloaders = get_amazon_dataloaders(
-                num_clients=num_clients,
-                data_dir=str(amazon_dir),
-                batch_size=batch_size,
-                test_split=test_split,
-            )
+            self.data_dir = amazon_dir
+            # Validate all expected client pickles exist
+            missing = [
+                i for i in range(self.num_clients)
+                if not (amazon_dir / f'client_{i}' / 'data.pkl').exists()
+            ]
+            if missing:
+                logger.warning(f"⚠️  Missing client pickles: {missing}")
+            found = self.num_clients - len(missing)
+            logger.info(f"🎉 Amazon data validated: {found}/{self.num_clients} clients found at {amazon_dir}")
+            # Log one client for sanity
+            sample_pkl = amazon_dir / 'client_0' / 'data.pkl'
+            if sample_pkl.exists():
+                import pandas as pd
+                df0 = pd.read_pickle(sample_pkl)
+                n_train = int(len(df0) * (1 - self.test_split))
+                n_test  = len(df0) - n_train
+                logger.info(f"   client_0 preview: {len(df0):,} rows → train={n_train:,} / test={n_test:,}")
+                logger.info(f"   Columns: {list(df0.columns)}")
+                del df0  # release memory immediately
 
         elif synthetic_dir.exists():
-            # Fallback to synthetic data
-            logger.warning("⚠️  Using SYNTHETIC data (contains random noise!)")
-            logger.warning("   For better results, use Amazon data:")
-            logger.warning("   1. PowerShell -ExecutionPolicy Bypass -File download_amazon_data.ps1")
-            logger.warning("   2. python src\\data_generation\\process_amazon_data.py")
-            
-            dataloaders_list = get_federated_dataloaders(
-                num_clients=num_clients,
-                data_dir=synthetic_dir,
-                batch_size=batch_size,
-                test_split=test_split
-            )
-            
-            # Convert list -> dict
-            dataloaders = {}
-            for client_id, loaders in enumerate(dataloaders_list):
-                if loaders is not None and len(loaders) == 2:
-                    train_loader, test_loader = loaders
-                    if train_loader is not None and test_loader is not None:
-                        dataloaders[client_id] = (train_loader, test_loader)
+            self.data_dir     = synthetic_dir
+            self.use_synthetic = True
+            logger.warning("⚠️  No Amazon data found — falling back to SYNTHETIC data")
         else:
             raise FileNotFoundError(
-                f"❌ No data found!\n"
-                f"Checked processed Amazon (paths.data_processed + legacy data/amazon_2023_processed), "
-                f"then synthetic:\n"
-                f"  - Synthetic: {synthetic_dir}\n\n"
-                f"Multi-category preprocess:\n"
-                f"  python src/data_generation/process_amazon_multi_category.py --config configs/config_multi_category.yaml\n\n"
-                f"Hoặc single-path Amazon + synthetic fallback:\n"
-                f"  PowerShell ... download_amazon_data.ps1\n"
-                f"  python src/data_generation/process_amazon_data.py\n\n"
-                f"  python src/data_generation/main_data_generation.py"
+                "❌ No data found!\n"
+                "Run: python src/data_generation/process_amazon_multi_category.py "
+                "--config configs/config_multi_category.yaml"
             )
-        
-        if not dataloaders:
-            raise ValueError(f"No dataloaders loaded. Expected {num_clients} clients")
-        
-        logger.info(f"✅ Loaded {len(dataloaders)} client dataloaders (expected {num_clients})")
-        
-        # Warn if some clients are missing
-        if len(dataloaders) < num_clients:
-            missing = set(range(num_clients)) - set(dataloaders.keys())
-            logger.warning(f"⚠️  Missing dataloaders for clients: {missing}")
-        
-        # Log first client stats
-        first_client_id = list(dataloaders.keys())[0]
-        train_loader, val_loader = dataloaders[first_client_id]
-        logger.info(f"   Client {first_client_id}:")
-        logger.info(f"     Train batches: {len(train_loader)}")
-        logger.info(f"     Val batches: {len(val_loader)}")
-        
-        return dataloaders
     
     def _client_fn(self, context):
-        """
-        Create a client function for Flower simulation
+        """Create a Flower client — data is loaded lazily inside this actor.
         
-        Args:
-            context: Flower Context object or client ID (string/int) for backward compatibility
-            
-        Returns:
-            FedPerClient instance
+        Each Ray actor calls this function independently; only this one client's
+        pickle is loaded into that actor's memory, keeping peak RAM ~500 MB/actor
+        instead of 4.7 GB shared across the main process.
         """
-        # Extract client ID from context
-        # In Flower 1.7.0, client_fn receives client ID as string/int
+        # ── Extract client ID ─────────────────────────────────────────
         cid = None
-        
-        # Try to extract client ID from context (string/int/dict)
         try:
             if isinstance(context, (str, int)):
                 cid = int(context)
@@ -284,59 +264,98 @@ class FederatedTrainingPipeline:
             elif hasattr(context, 'partition_id'):
                 cid = int(context.partition_id)
             else:
-                # Last resort: try to convert
                 cid = int(str(context))
         except (ValueError, TypeError, AttributeError) as e:
-            logger.error(f"Failed to extract client ID from context: {context}, type: {type(context)}, error: {e}")
-            raise ValueError(f"Cannot extract client ID from context: {context}")
-        
-        # Ensure cid is integer
+            raise ValueError(f"Cannot extract client ID from context={context}: {e}")
         cid = int(cid)
-        
-        # Validate client ID exists in dataloaders
-        if cid not in self.dataloaders:
-            available = list(self.dataloaders.keys())
-            logger.error(f"Client {cid} not found in dataloaders. Available clients: {available}")
-            raise ValueError(
-                f"Client {cid} not found in dataloaders. "
-                f"Available clients: {available}. "
-                f"Total clients configured: {len(available)}"
-            )
-        
-        # Get client data
-        train_loader, test_loader = self.dataloaders[cid]
-        
-        # Validate loaders
-        if train_loader is None or test_loader is None:
-            raise ValueError(f"Client {cid} has None loaders")
-        
-        # Create a copy of the model for this client
+
+        if cid in self._loader_cache:
+            train_loader, test_loader = self._loader_cache[cid]
+        else:
+            train_loader, test_loader = self._load_client_dataloaders(cid)
+            self._loader_cache[cid] = (train_loader, test_loader)
+
+        # ── Clone global model for this client ────────────────────────
         import copy
         client_model = copy.deepcopy(self.global_model)
         client_model.to(self.device)
-        
-        # Create client
+
+        # ── Build Flower client ───────────────────────────────────────
+        tr_cfg = self.config["training"]
+        fed_cfg = self.config["federated"]
+        state_path = self.client_states_dir / f"client_{cid}.pt"
         numpy_client = FedPerClient(
             client_id=cid,
             model=client_model,
             train_loader=train_loader,
             test_loader=test_loader,
             device=str(self.device),
-            local_epochs=self.config['training']['local_epochs'],
-            learning_rate=self.config['training']['learning_rate'],
-            apply_dp=self.config.get('privacy', {}).get('differential_privacy', False)
+            local_epochs=config_int(tr_cfg.get("local_epochs"), 3),
+            learning_rate=config_float(tr_cfg.get("learning_rate"), 1e-3),
+            apply_dp=self.config.get('privacy', {}).get('differential_privacy', False),
+            weight_decay=config_float(tr_cfg.get("weight_decay"), 1e-4),
+            num_rounds=config_int(fed_cfg.get("num_rounds"), 100),
+            state_path=state_path,
+            personalize_epochs_eval=config_int(tr_cfg.get("personalize_epochs_eval"), 2),
+            loss_type=str(tr_cfg.get("loss", "weighted_ce")),
         )
-        
-        # Convert NumPyClient to Client (required by newer Flower versions)
         try:
             client = numpy_client.to_client()
         except AttributeError:
-            # If to_client() doesn't exist, return NumPyClient directly
-            # (older Flower versions)
             client = numpy_client
-        
-        logger.debug(f"✅ Created client {cid}")
+
+        logger.debug(f"✅ Lazy-loaded client {cid} | train={len(train_loader.dataset):,}")
         return client
+
+    def _load_client_dataloaders(self, cid: int):
+        """Load train/test loaders for one client (cached after first call)."""
+        import numpy as np
+        import pandas as pd
+        import torch
+        from torch.utils.data import DataLoader
+
+        if not self.use_synthetic:
+            pkl_path = self.data_dir / f'client_{cid}' / 'data.pkl'
+            if not pkl_path.exists():
+                raise FileNotFoundError(f"Client {cid} pickle not found: {pkl_path}")
+            client_df = pd.read_pickle(pkl_path)
+
+            client_df = client_df.sample(frac=1, random_state=42 + cid).reset_index(drop=True)
+            n_test = int(len(client_df) * self.test_split)
+            test_df = client_df[:n_test]
+            train_df = client_df[n_test:]
+
+            from src.data_generation.amazon_dataloader import AmazonDataset
+            from torch.utils.data import WeightedRandomSampler
+
+            train_ds = AmazonDataset(train_df)
+            labels = train_df["label"].astype(int).values
+            class_counts = np.bincount(labels, minlength=5).astype(np.float64)
+            sample_weights = 1.0 / class_counts[labels].clip(min=1.0)
+            train_sampler = WeightedRandomSampler(
+                weights=torch.from_numpy(sample_weights).double(),
+                num_samples=len(train_ds),
+                replacement=True,
+            )
+            train_loader = DataLoader(
+                train_ds, batch_size=self.batch_size,
+                sampler=train_sampler, shuffle=False,
+                num_workers=0, pin_memory=False, drop_last=False,
+            )
+            test_loader = DataLoader(
+                AmazonDataset(test_df), batch_size=self.batch_size,
+                shuffle=False, num_workers=0, pin_memory=False, drop_last=False
+            )
+            return train_loader, test_loader
+
+        from src.data_generation.federated_dataloader import get_federated_dataloaders
+        loaders_list = get_federated_dataloaders(
+            num_clients=self.num_clients, data_dir=self.data_dir,
+            batch_size=self.batch_size, test_split=self.test_split
+        )
+        if cid >= len(loaders_list) or loaders_list[cid] is None:
+            raise ValueError(f"Synthetic client {cid} data not available")
+        return loaders_list[cid]
 
 
     
@@ -358,40 +377,38 @@ class FederatedTrainingPipeline:
         
         # Configure simulation
         num_rounds = self.config['federated']['num_rounds']
+        use_gpu    = torch.cuda.is_available() and self.device.type == 'cuda'
+        # Allow up to 5 clients to share the GPU concurrently (0.2 VRAM each)
+        gpu_per_client = 0.2 if use_gpu else 0.0
         
-        logger.info(f"Configuration:")
-        logger.info(f"  Rounds: {num_rounds}")
-        logger.info(f"  Clients per round: {int(self.config['federated']['fraction_fit'] * self.config['federated']['num_clients'])}")
-        logger.info(f"  Local epochs: {self.config['training']['local_epochs']}")
-        logger.info(f"  Batch size: {self.config['training']['batch_size']}")
+        logger.info("Configuration:")
+        logger.info(f"  Rounds       : {num_rounds}")
+        logger.info(f"  Clients/round: {int(self.config['federated']['fraction_fit'] * self.config['federated']['num_clients'])}")
+        logger.info(f"  Local epochs : {self.config['training']['local_epochs']}")
+        logger.info(f"  Batch size   : {self.config['training']['batch_size']}")
         logger.info(f"  Learning rate: {self.config['training']['learning_rate']}")
+        logger.info(f"  Device       : {self.device} | GPU/client: {gpu_per_client}")
+        logger.info(f"  Data mode    : {'Amazon pickle (lazy)' if not self.use_synthetic else 'Synthetic'}")
         logger.info("")
-        
+
         # Run simulation
         try:
-            # Reduce resource usage to avoid Ray crashes on Windows
-            # Use fewer concurrent clients and lower memory per client
-            # NOTE: Don't set memory limit - let Ray manage it automatically
-            # Setting memory too high causes "No available node types" error
+            # Lazy loading means the client_fn closure is tiny (just paths + config).
+            # No DataLoader objects are serialised through Ray object store.
             client_resources = {
                 "num_cpus": 1,
-                "num_gpus": 0.0 if self.device.type == 'cpu' else 0.2
-                # Removed "memory" constraint - let Ray manage memory automatically
-                # This avoids "No available node types" error
+                "num_gpus": gpu_per_client,
             }
-            
-            # Set Ray environment variables before initialization to reduce memory pressure
-            # This helps avoid Windows access violation errors
+
             os.environ.setdefault("RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE", "1")
-            os.environ.setdefault("RAY_DEDUP_LOGS", "1")  # Reduce log duplication
-            
-            # Configure Ray initialization to reduce memory pressure on Windows
-            # This helps avoid access violation errors
+            os.environ.setdefault("RAY_DEDUP_LOGS", "1")
+
             ray_init_args = {
                 "ignore_reinit_error": True,
                 "include_dashboard": False,
-                "object_store_memory": 1 * 1024 * 1024 * 1024,  # 1GB (reduce from default ~2GB)
-                "num_cpus": min(6, os.cpu_count() or 4),  # Limit CPU usage to avoid overload
+                # 512 MB object store — enough for model weights only (lazy data load)
+                "object_store_memory": 512 * 1024 * 1024,
+                "num_cpus": min(6, os.cpu_count() or 4),
             }
             
             history = fl.simulation.start_simulation(
@@ -407,8 +424,8 @@ class FederatedTrainingPipeline:
             logger.info("✅ TRAINING COMPLETED SUCCESSFULLY")
             logger.info("="*70)
             
-            # Save results
-            self._save_results(history)
+            # Save results (strategy carries true train_loss per round)
+            self._save_results(history, strategy=strategy)
             
             return history
             
@@ -418,7 +435,7 @@ class FederatedTrainingPipeline:
             traceback.print_exc()
             raise
     
-    def _save_results(self, history):
+    def _save_results(self, history, strategy=None):
         """Save training results"""
         
         logger.info("\n📊 Saving results...")
@@ -445,8 +462,14 @@ class FederatedTrainingPipeline:
             'losses_distributed': [(round, loss) for round, loss in history.losses_distributed],
             'losses_centralized': [(round, loss) for round, loss in history.losses_centralized] if history.losses_centralized else [],
             'metrics_distributed': history.metrics_distributed,
-            'metrics_centralized': history.metrics_centralized if history.metrics_centralized else {}
+            'metrics_centralized': history.metrics_centralized if history.metrics_centralized else {},
+            'note': 'losses_distributed = Flower eval loss (distributed). train_loss_fit = weighted client train loss from fit().',
         }
+        if strategy is not None and getattr(strategy, 'metrics_history', None):
+            mh = strategy.metrics_history
+            history_dict['train_loss_fit'] = list(mh.get('train_loss', []))
+            history_dict['test_loss_eval'] = list(mh.get('test_loss', []))
+            history_dict['accuracy_eval'] = list(mh.get('accuracy', []))
         
         with open(history_path, 'w') as f:
             json.dump(history_dict, f, indent=2)
@@ -455,7 +478,7 @@ class FederatedTrainingPipeline:
         # Plot results
         try:
             plot_path = self.metrics_dir / "training_curves.png"
-            self._plot_training_history(history, save_path=plot_path)
+            self._plot_training_history(history, save_path=plot_path, strategy=strategy)
             logger.info(f"✅ Saved training curves: {plot_path}")
         except Exception as e:
             logger.warning(f"⚠️  Could not plot training curves: {e}")
@@ -466,26 +489,32 @@ class FederatedTrainingPipeline:
             yaml.dump(self.config, f)
         logger.info(f"✅ Saved configuration: {config_path}")
     
-    def _plot_training_history(self, history, save_path: Path):
+    def _plot_training_history(self, history, save_path: Path, strategy=None):
         """Plot training history: Loss và Accuracy theo round"""
         try:
             import matplotlib.pyplot as plt
             
             fig, axes = plt.subplots(1, 2, figsize=(12, 4))
             
-            # === Subplot 1: Loss ===
+            # === Subplot 1: Loss (eval + optional fit train loss) ===
             if history.losses_distributed:
                 rounds_loss, losses = zip(*history.losses_distributed)
-                axes[0].plot(rounds_loss, losses, 'b-o', markersize=4, label='Distributed Loss')
+                axes[0].plot(rounds_loss, losses, 'b-o', markersize=4, label='Eval loss (Flower)')
             
             if history.losses_centralized:
                 rounds_c, losses_c = zip(*history.losses_centralized)
-                axes[0].plot(rounds_c, losses_c, 'r--', label='Centralized Loss')
+                axes[0].plot(rounds_c, losses_c, 'r--', label='Centralized eval')
+            
+            if strategy is not None and getattr(strategy, 'metrics_history', None):
+                tl_fit = strategy.metrics_history.get('train_loss') or []
+                if tl_fit:
+                    r_fit, v_fit = zip(*tl_fit)
+                    axes[0].plot(r_fit, v_fit, 'c-s', markersize=3, label='Train loss (fit)')
             
             axes[0].set_xlabel('Round')
             axes[0].set_ylabel('Loss')
-            axes[0].set_title('Training Loss')
-            axes[0].legend()
+            axes[0].set_title('Loss per round')
+            axes[0].legend(fontsize=8)
             axes[0].grid(True)
             
             # === Subplot 2: Accuracy (Flower: metrics_distributed['accuracy'] = [(round, val), ...]) ===
@@ -548,6 +577,7 @@ def main(config_path: Optional[str] = None):
 
     with open(resolved, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+    normalize_training_config(config)
 
     exp_block = config.get("experiment") or {}
     thesis_block = config.get("thesis") or {}

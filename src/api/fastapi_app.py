@@ -7,10 +7,16 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from fastapi import FastAPI, HTTPException, Query
+import json
+import re
+import socket
+from collections import deque
+
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 import torch
 import pandas as pd
 import numpy as np
@@ -26,14 +32,12 @@ from src.api.metrics_calculator import MetricsCalculator, explain_recommendation
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI
 app = FastAPI(
     title="Federated Multi-Modal Recommendation API",
     description="API for personalized recommendations with privacy-preserving federated learning",
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,17 +46,145 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables (initialized on startup)
 model = None
 milvus_manager = None
 items_df = None
 users_df = None
 device = None
+metrics_calculator = None
+
+PRIVACY_DEMO_SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+PRIVACY_DEMO_BUFFER_MAX = 24
+privacy_demo_sessions: Dict[str, Dict[str, Any]] = {}
 
 
-# ============================================================================
-# Data Models
-# ============================================================================
+def _privacy_demo_get_session(session_id: str) -> Dict[str, Any]:
+    if session_id not in privacy_demo_sessions:
+        privacy_demo_sessions[session_id] = {
+            "laptops": [],
+            "phone": None,
+            "buffer": deque(maxlen=PRIVACY_DEMO_BUFFER_MAX),
+        }
+    return privacy_demo_sessions[session_id]
+
+
+def _privacy_demo_cleanup_session(session_id: str) -> None:
+    s = privacy_demo_sessions.get(session_id)
+    if not s:
+        return
+    laptops = s.get("laptops") or []
+    if len(laptops) == 0 and s.get("phone") is None:
+        privacy_demo_sessions.pop(session_id, None)
+
+
+async def _privacy_broadcast_laptops(sess: Dict[str, Any], payload: Dict[str, Any]) -> int:
+    """Gửi JSON tới mọi tab laptop đang mở; gỡ socket hỏng."""
+    laptops: List[WebSocket] = list(sess.get("laptops") or [])
+    ok: List[WebSocket] = []
+    for ws in laptops:
+        try:
+            await ws.send_json(payload)
+            ok.append(ws)
+        except Exception:
+            continue
+    sess["laptops"] = ok
+    return len(ok)
+
+
+def _cell_str(row: pd.Series, *keys: str, default: str = "") -> str:
+    for k in keys:
+        if k not in row.index:
+            continue
+        v = row[k]
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in ("nan", "none", "<na>"):
+            return s
+    return default
+
+
+_catalog_title_by_item_id: Optional[Dict[str, str]] = None
+
+
+def _build_catalog_title_lookup() -> Dict[str, str]:
+    """ASIN → tiêu đề dài nhất tìm được trong toàn bộ catalog (nhiều dòng trùng ASIN)."""
+    global _catalog_title_by_item_id
+    if _catalog_title_by_item_id is not None:
+        return _catalog_title_by_item_id
+    out: Dict[str, str] = {}
+    if items_df is None or len(items_df) == 0 or "item_id" not in items_df.columns:
+        return out
+    for i in range(len(items_df)):
+        r = items_df.iloc[i]
+        iid = _cell_str(r, "item_id")
+        if not iid:
+            continue
+        t = _cell_str(r, "item_title", "title", "name", "product_title")
+        if t and len(t) > len(out.get(iid, "")):
+            out[iid] = t
+    _catalog_title_by_item_id = out
+    return out
+
+
+def _preferred_catalog_positions(df: pd.DataFrame) -> np.ndarray:
+    """Ưu tiên các dòng có tiêu đề đọ được để demo nhìn giống ‘sản phẩm’ hơn."""
+    n = len(df)
+    if n == 0:
+        return np.array([], dtype=np.int64)
+    if "item_title" in df.columns:
+        s = df["item_title"].fillna("").astype(str)
+        good = s.str.len() > 2
+        good &= ~s.str.lower().str.strip().isin(["nan", "none", ""])
+        pos = np.flatnonzero(good.to_numpy())
+        if pos.size > 0:
+            return pos.astype(np.int64)
+    return np.arange(n, dtype=np.int64)
+
+
+def _row_display_fields(row: pd.Series) -> Dict[str, Any]:
+    name = _cell_str(row, "item_title", "name", "title", "item_name", "product_title")
+    item_id = _cell_str(row, "item_id") or str(row.name)
+
+    if not name or name.startswith("Sản phẩm"):
+        lut = _build_catalog_title_lookup()
+        if item_id and item_id in lut:
+            name = lut[item_id]
+
+    if not name:
+        name = f"ASIN {item_id}" if item_id else "Sản phẩm"
+
+    category = (
+        _cell_str(row, "item_category", "category", "main_category", "domain", "main_cat") or ""
+    )
+    if not category:
+        raw = _cell_str(row, "categories")
+        if raw:
+            category = raw.replace("[", "").replace("]", "").split(",")[0].strip()[:48]
+    if not category:
+        category = "—"
+
+    brand = _cell_str(row, "item_brand", "brand", "manufacturer")
+    image_url = _cell_str(row, "item_image_url", "image_url", "image", "thumbnail")
+
+    price = 0.0
+    for k in ("item_price", "price"):
+        if k in row.index and pd.notna(row[k]):
+            try:
+                price = float(row[k])
+                break
+            except (TypeError, ValueError):
+                pass
+
+    return {
+        "name": name,
+        "category": category,
+        "brand": brand,
+        "price": price,
+        "image_url": image_url,
+        "item_id": item_id,
+    }
+
 
 class RecommendationRequest(BaseModel):
     """Request for recommendations"""
@@ -64,23 +196,24 @@ class RecommendationRequest(BaseModel):
 
 class RecommendationItem(BaseModel):
     """Single recommendation item"""
-    item_id: int
-    name: str
-    category: str
-    score: float
-    rank: int
-    
-    # Explainability
+    item_id: str = ""
+    name: str = ""
+    category: str = ""
+    score: float = 0.0
+    rank: int = 0
+
     text_contribution: Optional[float] = None
     image_contribution: Optional[float] = None
     behavior_contribution: Optional[float] = None
     explanation: Optional[str] = None
     
     # Metadata
-    avg_rating: float
-    num_ratings: int
-    price: float
-    brand: str
+    avg_rating: float = 0.0
+    num_ratings: int = 0
+    price: float = 0.0
+    brand: str = ""
+    image_url: Optional[str] = None
+    probability_percent: float = 0.0
 
 
 class RecommendationResponse(BaseModel):
@@ -95,6 +228,8 @@ class RecommendationResponse(BaseModel):
     # Metadata
     timestamp: str
     processing_time_ms: float
+    output_classes: int = 0
+    score_explanation: str = ""
 
 
 class UserProfileResponse(BaseModel):
@@ -122,21 +257,15 @@ class HealthResponse(BaseModel):
     num_users: int
 
 
-# ============================================================================
-# Startup & Shutdown
-# ============================================================================
-
 @app.on_event("startup")
 async def startup_event():
     """Initialize models and data on startup"""
-    global model, milvus_manager, items_df, users_df, device
+    global model, milvus_manager, items_df, users_df, device, metrics_calculator
     
     logger.info("🚀 Starting up API server...")
-    
-    # Initialize metrics calculator
+
     metrics_calculator = MetricsCalculator()
-    
-    # Set device
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"🖥️  Using device: {device}")
     
@@ -149,16 +278,13 @@ async def startup_event():
         else:
             config = {}
 
-        # 1. Load data (prefer Amazon processed artifacts if present)
         logger.info("📂 Loading data...")
         amazon_dir = project_root / "data" / "amazon_2023_processed"
         amazon_client0 = amazon_dir / "client_0" / "data.pkl"
 
-        # Preferred: build item catalog + embeddings from processed interactions
         if amazon_client0.exists():
             amazon_interactions_df = pd.read_pickle(amazon_client0)
 
-            # Normalize embedding columns (list -> numpy array) lazily later; keep lists in DF for now
             cols_needed = [
                 "item_id",
                 "item_title",
@@ -172,11 +298,9 @@ async def startup_event():
             available = [c for c in cols_needed if c in amazon_interactions_df.columns]
             tmp = amazon_interactions_df[available].copy()
 
-            # Build unique item table (first occurrence per item_id)
             items_df = tmp.drop_duplicates(subset=["item_id"]).reset_index(drop=True)
             logger.info(f"✅ Built Amazon item catalog from client_0: {len(items_df)} items")
 
-            # Build user table from unique user_id
             if "user_id" in amazon_interactions_df.columns:
                 users_df = (
                     amazon_interactions_df.groupby("user_id")
@@ -188,16 +312,13 @@ async def startup_event():
                 users_df = pd.DataFrame({"user_id": [], "num_interactions": [], "avg_rating_given": []})
                 logger.warning("⚠️  Amazon interactions missing user_id; users table empty")
 
-        # Secondary: use pre-saved tables from processor (no embeddings guaranteed)
         elif (amazon_dir / "items_global.csv").exists():
             items_df = pd.read_csv(amazon_dir / "items_global.csv")
             logger.warning("⚠️  Loaded Amazon items_global.csv (may not include embeddings for ranking)")
             logger.info(f"✅ Loaded Amazon items table: {len(items_df)} items")
         else:
-            # Fallback to synthetic demo artifacts if present
             items_df = pd.read_csv(project_root / "data/simulated_clients/items_global.csv")
             logger.warning("⚠️  Using simulated items table (Amazon items_global.csv not found)")
-            # Parse list columns
             if "text_keywords" in items_df.columns and isinstance(items_df["text_keywords"].iloc[0], str):
                 items_df["text_keywords"] = items_df["text_keywords"].apply(eval)
             if "image_features" in items_df.columns and isinstance(items_df["image_features"].iloc[0], str):
@@ -216,7 +337,6 @@ async def startup_event():
             logger.warning("⚠️  Using simulated users table (Amazon users_global.csv not found)")
             logger.info(f"✅ Loaded simulated users: {len(users_df)} users")
         
-        # 2. Initialize Milvus
         logger.info("🔌 Connecting to Milvus...")
         try:
             milvus_manager = MilvusManager(
@@ -226,7 +346,6 @@ async def startup_event():
                 embedding_dim=384
             )
             
-            # Try to load collection if it exists
             if milvus_manager.collection:
                 logger.info("✅ Milvus connected and collection loaded")
             else:
@@ -236,7 +355,6 @@ async def startup_event():
             logger.info("💡 You can still use the API, but similarity search won't work")
             milvus_manager = None
         
-        # 3. Load model + checkpoint (preferred)
         logger.info("🔨 Loading model...")
 
         model_cfg = (config or {}).get("model", {})
@@ -247,8 +365,6 @@ async def startup_event():
             hidden_dim=model_cfg.get("hidden_dim", 256),
             output_dim=384,
         )
-        # ✅ num_classes MUST match training config (5 = rating 1-5 → 0-4)
-        # NOT len(items_df) — that would create a mismatch when loading checkpoint
         model = FedPerRecommender(
             multimodal_encoder=multimodal_encoder,
             num_classes=model_cfg.get("num_classes", 5),
@@ -256,7 +372,6 @@ async def startup_event():
         model.to(device)
         model.eval()
         
-        # Load trained weights if checkpoint exists
         ckpt_candidates = sorted(
             project_root.glob("experiments/**/models/global_model_final.pt"),
             key=lambda p: p.stat().st_mtime,
@@ -275,6 +390,9 @@ async def startup_event():
             logger.warning("⚠️  No checkpoint found — using random-initialized model for demo")
         
         logger.info("✅ Model loaded")
+
+        global _catalog_title_by_item_id
+        _catalog_title_by_item_id = None
         
         logger.info("🎉 API server ready!")
         
@@ -291,10 +409,6 @@ async def shutdown_event():
     if milvus_manager:
         milvus_manager.close()
 
-
-# ============================================================================
-# API Endpoints
-# ============================================================================
 
 @app.get("/", response_model=Dict[str, str])
 async def root():
@@ -316,6 +430,213 @@ async def health_check():
         num_items=len(items_df) if items_df is not None else 0,
         num_users=len(users_df) if users_df is not None else 0
     )
+
+
+def _guess_lan_ipv4() -> Optional[str]:
+    """IPv4 của máy chủ trên LAN (ước lượng qua socket), phục vụ link mở từ điện thoại."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(0.35)
+            s.connect(("8.8.8.8", 80))
+            return str(s.getsockname()[0])
+    except OSError:
+        return None
+
+
+@app.get("/api/demo-lan-hint")
+async def demo_lan_hint(request: Request):
+    """
+    Gợi ý base URL để điện thoại (cùng Wi‑Fi) mở demo — tránh dùng localhost trên điện thoại.
+    """
+    port = request.url.port
+    if port is None:
+        port = 443 if request.url.scheme == "https" else 80
+    lan = _guess_lan_ipv4()
+    if not lan:
+        return {
+            "ok": False,
+            "lan_ipv4": None,
+            "base_for_phone": None,
+            "mobile_demo_path": "/demo/mobile_privacy_demo.html",
+            "tips": [
+                "Không tự nhận diện được IP LAN — vào Cài đặt mạng trên Windows, xem IPv4 của Wi‑Fi, thay vào http://<IP>:8000/demo/...",
+                "Trên điện thoại không bao giờ dùng localhost (đó là chính điện thoại).",
+            ],
+        }
+    base = f"{request.url.scheme}://{lan}:{port}"
+    return {
+        "ok": True,
+        "lan_ipv4": lan,
+        "port": port,
+        "base_for_phone": base,
+        "mobile_demo_path": "/demo/mobile_privacy_demo.html",
+        "tips": [
+            "Điện thoại: dùng IP Wi‑Fi laptop trong URL, không dùng localhost.",
+            "Không vào được: kiểm tra firewall cổng 8000.",
+        ],
+    }
+
+
+@app.websocket("/ws/privacy-demo/{session_id}")
+async def privacy_demo_websocket(websocket: WebSocket, session_id: str, role: str = Query(...)):
+    """
+    Relay minh họa: điện thoại (role=phone) gửi JSON type=privacy_exchange
+    → laptop (role=laptop) nhận cùng payload để hiển thị song song.
+    """
+    if role not in ("laptop", "phone"):
+        await websocket.close(code=4400)
+        return
+    if not PRIVACY_DEMO_SESSION_RE.match(session_id):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    sess = _privacy_demo_get_session(session_id)
+
+    if role == "laptop":
+        laptops: List[WebSocket] = sess.setdefault("laptops", [])
+        laptops.append(websocket)
+        peer_online = sess.get("phone") is not None
+        try:
+            await websocket.send_json(
+                {
+                    "type": "system",
+                    "message": "Đã kết nối (màn hình laptop).",
+                    "peer_online": peer_online,
+                }
+            )
+            if peer_online and sess.get("phone") is not None:
+                try:
+                    await sess["phone"].send_json(
+                        {
+                            "type": "system",
+                            "message": "Màn hình laptop đã online.",
+                            "peer_online": True,
+                        }
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        buf = sess["buffer"]
+        while buf:
+            try:
+                await websocket.send_json(buf.popleft())
+            except Exception:
+                break
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("type") == "ping":
+                    try:
+                        await websocket.send_json({"type": "pong"})
+                    except Exception:
+                        break
+        except WebSocketDisconnect:
+            pass
+        finally:
+            lst = sess.get("laptops") or []
+            if websocket in lst:
+                lst.remove(websocket)
+            sess["laptops"] = lst
+            phone = sess.get("phone")
+            if phone is not None:
+                try:
+                    await phone.send_json(
+                        {
+                            "type": "system",
+                            "message": "Màn hình laptop đã ngắt (có thể còn tab khác).",
+                            "peer_online": len(sess.get("laptops") or []) > 0,
+                        }
+                    )
+                except Exception:
+                    pass
+            _privacy_demo_cleanup_session(session_id)
+        return
+
+    # --- phone ---
+    old = sess.get("phone")
+    if old is not None:
+        try:
+            await old.close(code=4001, reason="phone_reconnected")
+        except Exception:
+            pass
+    sess["phone"] = websocket
+
+    try:
+        n_laptops = len(sess.get("laptops") or [])
+        await websocket.send_json(
+            {
+                "type": "system",
+                "message": "Đã kết nối (điện thoại).",
+                "peer_online": n_laptops > 0,
+            }
+        )
+        if n_laptops > 0:
+            await _privacy_broadcast_laptops(
+                sess,
+                {
+                    "type": "system",
+                    "message": "Điện thoại đã online.",
+                    "peer_online": True,
+                },
+            )
+    except Exception:
+        pass
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "detail": "Invalid JSON"})
+                continue
+
+            if msg.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
+            if msg.get("type") != "privacy_exchange":
+                await websocket.send_json(
+                    {"type": "error", "detail": "Chỉ hỗ trợ type=privacy_exchange hoặc ping"}
+                )
+                continue
+
+            n_sent = await _privacy_broadcast_laptops(sess, msg)
+            if n_sent == 0:
+                sess["buffer"].append(msg)
+
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "system",
+                        "message": "Đã gửi tới màn hình laptop."
+                        if n_sent > 0
+                        else "Chưa có tab laptop nào mở trang nhận — tin đã xếp hàng.",
+                        "peer_online": n_sent > 0,
+                    }
+                )
+            except Exception:
+                pass
+
+    except WebSocketDisconnect:
+        sess["phone"] = None
+        await _privacy_broadcast_laptops(
+            sess,
+            {
+                "type": "system",
+                "message": "Điện thoại đã ngắt kết nối.",
+                "peer_online": False,
+            },
+        )
+        _privacy_demo_cleanup_session(session_id)
 
 
 @app.post("/recommend", response_model=RecommendationResponse)
@@ -356,19 +677,51 @@ async def get_recommendations(request: RecommendationRequest):
             
             # Get top-K items
             scores = torch.softmax(logits, dim=1)[0]
-            top_scores, top_items = torch.topk(scores, request.top_k)
+            n_cls = int(scores.shape[0])
+            effective_k = max(1, min(request.top_k, n_cls))
+            top_scores, top_items = torch.topk(scores, effective_k)
         
-        # 4. Get item details
+        # 4. Map logits class → catalog rows (ưu tiên dòng có tiêu đề; softmax → hiển thị %)
         recommendations = []
+        positions = _preferred_catalog_positions(items_df)
+        stride_p = max(1, len(positions) // max(n_cls, 1))
+        score_expl = (
+            f"Điểm là xác suất softmax trên {n_cls} lớp đầu ra (tổng các lớp = 100%). "
+            f"Nếu các lớp gần đều, mỗi lớp ~{100.0 / max(n_cls, 1):.1f}% — "
+            "đó là bình thường, không phải ‘điểm chất lượng’ thang 0–100."
+        )
         for rank, (item_idx, score) in enumerate(zip(top_items.cpu().numpy(), top_scores.cpu().numpy()), 1):
-            item = items_df.iloc[item_idx]
-            
+            cls_i = int(item_idx)
+            j = int((cls_i * stride_p) % len(positions))
+            idx = int(positions[j])
+            row = items_df.iloc[idx]
+            disp = _row_display_fields(row)
+            prob_pct = round(float(score) * 100.0, 2)
+
+            item_avg_rating = 0.0
+            for k in ("avg_rating", "rating"):
+                if k in row.index and pd.notna(row[k]):
+                    try:
+                        item_avg_rating = float(row[k])
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            item_num_ratings = 0
+            for k in ("num_ratings", "num_interactions"):
+                if k in row.index and pd.notna(row[k]):
+                    try:
+                        item_num_ratings = int(row[k])
+                        break
+                    except (TypeError, ValueError):
+                        pass
+
             rec_item = RecommendationItem(
-                item_id=int(item['item_id']),
-                name=item['name'],
-                category=item['category'],
+                item_id=disp["item_id"],
+                name=disp["name"],
+                category=disp["category"],
                 score=float(score),
                 rank=rank,
+                probability_percent=prob_pct,
                 
                 # Explainability
                 text_contribution=float(fusion_weights[0, 0]),
@@ -376,10 +729,11 @@ async def get_recommendations(request: RecommendationRequest):
                 behavior_contribution=float(fusion_weights[0, 2]),
                 
                 # Metadata
-                avg_rating=float(item['avg_rating']),
-                num_ratings=int(item['num_ratings']),
-                price=float(item['price']),
-                brand=item['brand']
+                avg_rating=item_avg_rating,
+                num_ratings=item_num_ratings,
+                price=disp["price"],
+                brand=disp["brand"],
+                image_url=disp["image_url"] or None,
             )
             
             recommendations.append(rec_item)
@@ -397,7 +751,9 @@ async def get_recommendations(request: RecommendationRequest):
                 "behavior": float(fusion_weights[0, 2].item()),
             },
             timestamp=datetime.now().isoformat(),
-            processing_time_ms=processing_time
+            processing_time_ms=processing_time,
+            output_classes=n_cls,
+            score_explanation=score_expl,
         )
         
         return response
@@ -501,13 +857,37 @@ async def search_items(
 async def get_statistics():
     """Get system statistics"""
     try:
+        # Resolve column names (Amazon vs synthetic)
+        cat_col = 'item_category' if 'item_category' in items_df.columns else 'category'
+        categories = items_df[cat_col].value_counts().to_dict() if cat_col in items_df.columns else {}
+        
+        # Users preference types (may not exist in Amazon data)
+        pref_types = {}
+        if 'preference_type' in users_df.columns:
+            pref_types = users_df['preference_type'].value_counts().to_dict()
+        
+        # Average rating (may be avg_rating or computed from data)
+        avg_rating = 0.0
+        if 'avg_rating' in items_df.columns:
+            avg_rating = float(items_df['avg_rating'].mean())
+        elif 'rating' in items_df.columns:
+            avg_rating = float(items_df['rating'].mean())
+        
+        total_ratings = 0
+        if 'num_ratings' in items_df.columns:
+            total_ratings = int(items_df['num_ratings'].sum())
+        elif 'num_interactions' in users_df.columns:
+            total_ratings = int(users_df['num_interactions'].sum())
+        else:
+            total_ratings = len(items_df)
+        
         stats = {
             "total_items": len(items_df),
             "total_users": len(users_df),
-            "categories": items_df['category'].value_counts().to_dict(),
-            "preference_types": users_df['preference_type'].value_counts().to_dict(),
-            "avg_item_rating": float(items_df['avg_rating'].mean()),
-            "total_ratings": int(items_df['num_ratings'].sum())
+            "categories": categories,
+            "preference_types": pref_types,
+            "avg_item_rating": avg_rating,
+            "total_ratings": total_ratings,
         }
         
         # Milvus stats
@@ -560,23 +940,28 @@ async def get_performance_metrics():
             )
             
             scores = torch.softmax(logits, dim=1)[0]
-            top_scores, top_items = torch.topk(scores, 10)
+            top_k = min(10, scores.shape[0])
+            top_scores, top_items = torch.topk(scores, top_k)
         
-        # Prepare recommendations for metrics
+        # Prepare recommendations for metrics (resolve column names)
         recommendations = []
         for rank, (item_idx, score) in enumerate(zip(top_items.cpu().numpy(), top_scores.cpu().numpy()), 1):
-            item = items_df.iloc[item_idx]
+            idx = int(item_idx) % len(items_df)
+            item = items_df.iloc[idx]
             recommendations.append({
-                'item_id': int(item['item_id']),
-                'name': item['name'],
-                'category': item['category'],
+                'item_id': str(item.get('item_id', idx)),
+                'name': str(item.get('item_title', item.get('name', f'Item {idx}')) or f'Item {idx}'),
+                'category': str(item.get('item_category', item.get('category', 'Unknown')) or 'Unknown'),
                 'score': float(score),
                 'rank': rank,
-                'avg_rating': float(item['avg_rating']),
-                'num_ratings': int(item['num_ratings']),
-                'price': float(item['price']),
-                'brand': item['brand']
+                'avg_rating': float(item.get('avg_rating', item.get('rating', 3.5)) or 3.5),
+                'num_ratings': int(item.get('num_ratings', 0) or 0),
+                'price': float(item.get('item_price', item.get('price', 0.0)) or 0.0),
+                'brand': str(item.get('item_brand', item.get('brand', '')) or '')
             })
+        
+        # User preference type (may not exist in Amazon data)
+        user_pref = str(user.get('preference_type', 'amazon_user') if hasattr(user, 'get') else 'amazon_user')
         
         # Generate comprehensive metrics report
         report = metrics_calculator.generate_comprehensive_report(
@@ -586,7 +971,7 @@ async def get_performance_metrics():
                 'image': float(fusion_weights[0, 1]),
                 'behavior': float(fusion_weights[0, 2])
             },
-            user_preference_type=user['preference_type'],
+            user_preference_type=user_pref,
             processing_time_ms=25.5,  # Typical inference time
             num_local_updates=5
         )
@@ -598,24 +983,46 @@ async def get_performance_metrics():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# Run Server
-# ============================================================================
+_demo_dir = Path(__file__).resolve().parent.parent.parent / "demo"
+if _demo_dir.is_dir():
+    app.mount("/demo", StaticFiles(directory=str(_demo_dir), html=True), name="demo_static")
+
+
+def get_uvicorn_server_kwargs(*, reload: bool) -> Dict[str, Any]:
+    """
+    Cấu hình Uvicorn giảm WebSocket đóng bất thường (mã 1006): keep-alive, ping/pong WS, tắt deflate.
+    Dùng backend ``websockets`` nếu đã cài gói ``websockets`` (ổn định hơn wsproto trên một số máy Windows).
+    """
+    kwargs: Dict[str, Any] = {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "reload": reload,
+        "log_level": "info",
+        "timeout_keep_alive": 300,
+        "ws_ping_interval": 25.0,
+        "ws_ping_timeout": 300.0,
+        "ws_per_message_deflate": False,
+    }
+    try:
+        import websockets  # noqa: F401
+
+        kwargs["ws"] = "websockets"
+    except ImportError:
+        pass
+    return kwargs
+
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    
-    print("="*70)
+
+    print("=" * 70)
     print("FEDERATED MULTI-MODAL RECOMMENDATION API")
-    print("="*70)
+    print("=" * 70)
     print("Starting server...")
     print("Docs available at: http://localhost:8000/docs")
-    print("="*70)
-    
-    uvicorn.run(
-        "fastapi_app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    _reload = os.environ.get("FED_REC_API_RELOAD", "").strip().lower() in ("1", "true", "yes")
+    print("Reload:", "ON" if _reload else "OFF (set FED_REC_API_RELOAD=1 to enable)")
+    print("=" * 70)
+
+    uvicorn.run("src.api.fastapi_app:app", **get_uvicorn_server_kwargs(reload=_reload))

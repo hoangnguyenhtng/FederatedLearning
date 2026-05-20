@@ -1,13 +1,4 @@
-"""
-Federated Server Implementation
 
-Nhiệm vụ:
-1. Khởi tạo global model
-2. Chọn clients tham gia mỗi round
-3. Aggregate parameters từ clients (FedAvg)
-4. Distribute global model về clients
-5. Track metrics và convergence
-"""
 import flwr as fl
 from flwr.common import Parameters, Scalar
 from flwr.server.strategy import FedAvg
@@ -18,15 +9,7 @@ import torch
 import torch.nn as nn
 
 class FedPerStrategy(FedAvg):
-    """
-    Custom Federated Learning Strategy cho FedPer
-    
-    Khác biệt với FedAvg standard:
-    - Chỉ aggregate SHARED parameters
-    - Personal parameters không được aggregate
-    - Có thể add custom logic cho Non-IID data
-    """
-    
+
     def __init__(self,
                  fraction_fit: float = 0.6,
                  fraction_evaluate: float = 0.5,
@@ -37,20 +20,9 @@ class FedPerStrategy(FedAvg):
                  on_fit_config_fn=None,
                  on_evaluate_config_fn=None,
                  accept_failures: bool = True,
-                 initial_parameters: Optional[Parameters] = None):
-        """
-        Args:
-            fraction_fit: Tỷ lệ clients tham gia training mỗi round
-            fraction_evaluate: Tỷ lệ clients tham gia evaluation
-            min_fit_clients: Số clients tối thiểu cho training
-            min_evaluate_clients: Số clients tối thiểu cho evaluation
-            min_available_clients: Số clients tối thiểu available
-            evaluate_fn: Function để evaluate global model
-            on_fit_config_fn: Config function cho training
-            on_evaluate_config_fn: Config function cho evaluation
-            accept_failures: Có chấp nhận failures không
-            initial_parameters: Initial model parameters
-        """
+                 initial_parameters: Optional[Parameters] = None,
+                 global_model: Optional[nn.Module] = None):  # ✅ Reference to update after agg
+
         super().__init__(
             fraction_fit=fraction_fit,
             fraction_evaluate=fraction_evaluate,
@@ -63,8 +35,12 @@ class FedPerStrategy(FedAvg):
             accept_failures=accept_failures,
             initial_parameters=initial_parameters
         )
-        
-        # Track metrics
+
+        # ✅ Reference to global model — updated after each aggregation
+        # Ensures _client_fn deepcopy gets latest shared weights (personal head init improves)
+        self.global_model = global_model
+
+        # Track metrics (train_loss from fit, test_loss + accuracy from evaluate)
         self.metrics_history = {
             'train_loss': [],
             'test_loss': [],
@@ -76,68 +52,54 @@ class FedPerStrategy(FedAvg):
                      server_round: int,
                      results: List[Tuple[fl.server.client_proxy.ClientProxy, fl.common.FitRes]],
                      failures: List[Union[Tuple[fl.server.client_proxy.ClientProxy, fl.common.FitRes], BaseException]]):
-        """
-        Aggregate parameters từ clients sau training
-        
-        Process:
-        1. Nhận shared parameters từ các clients
-        2. Weighted average theo số lượng samples
-        3. Return aggregated parameters
-        
-        Args:
-            server_round: Số round hiện tại
-            results: List (client_proxy, fit_result) từ các clients
-            failures: List các clients failed
-            
-        Returns:
-            aggregated_parameters: Aggregated model parameters
-            metrics: Aggregated metrics
-        """
+
         if not results:
             return None, {}
-        
+
         # Call parent class aggregation (FedAvg)
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(
             server_round, results, failures
         )
-        
-        # Extract metrics từ clients
+
+        # ✅ FIX: Update global_model shared params with aggregated weights
+        # This ensures _client_fn's deepcopy gets the latest federated shared representation
+        # → personal head in next round starts from better initialization
+        if aggregated_parameters is not None and self.global_model is not None:
+            try:
+                param_arrays = fl.common.parameters_to_ndarrays(aggregated_parameters)
+                shared_params = self.global_model.get_shared_parameters()
+                param_names = list(shared_params.keys())
+                from collections import OrderedDict
+                params_dict = OrderedDict()
+                dev = next(self.global_model.parameters()).device
+                for name, arr in zip(param_names, param_arrays):
+                    params_dict[name] = torch.tensor(arr, dtype=torch.float32, device=dev)
+                self.global_model.set_shared_parameters(params_dict)
+            except Exception as e:
+                print(f"[Server] ⚠️  Could not update global_model shared params: {e}")
+
+        # Extract train_loss metrics from clients (weighted average)
         train_losses = []
         num_examples = []
-        
         for _, fit_res in results:
             if fit_res.metrics and 'train_loss' in fit_res.metrics:
                 train_losses.append(fit_res.metrics['train_loss'])
                 num_examples.append(fit_res.num_examples)
-        
-        # Weighted average của train loss
+
         if train_losses:
             total_examples = sum(num_examples)
             weighted_loss = sum(loss * n for loss, n in zip(train_losses, num_examples)) / total_examples
-            
-            self.metrics_history['train_loss'].append(weighted_loss)
+            self.metrics_history['train_loss'].append((server_round, weighted_loss))
             self.metrics_history['round'].append(server_round)
-            
             print(f"[Server] Round {server_round} - Avg Train Loss: {weighted_loss:.4f}")
-        
+
         return aggregated_parameters, aggregated_metrics
     
     def aggregate_evaluate(self,
                           server_round: int,
                           results: List[Tuple[fl.server.client_proxy.ClientProxy, fl.common.EvaluateRes]],
                           failures: List[Union[Tuple[fl.server.client_proxy.ClientProxy, fl.common.EvaluateRes], BaseException]]):
-        """
-        Aggregate evaluation results từ clients
-        
-        Args:
-            server_round: Số round hiện tại
-            results: List (client_proxy, evaluate_result)
-            failures: List các clients failed
-            
-        Returns:
-            aggregated_loss: Aggregated loss
-            aggregated_metrics: Aggregated metrics
-        """
+
         if not results:
             return None, {}
         
@@ -166,40 +128,32 @@ class FedPerStrategy(FedAvg):
         
         if test_losses:
             weighted_test_loss = sum(loss * n for loss, n in zip(test_losses, num_examples)) / total_examples
-            self.metrics_history['test_loss'].append(weighted_test_loss)
-        
+            self.metrics_history['test_loss'].append((server_round, weighted_test_loss))
+
         if accuracies:
             weighted_accuracy = sum(acc * n for acc, n in zip(accuracies, num_examples)) / total_examples
-            self.metrics_history['accuracy'].append(weighted_accuracy)
+            self.metrics_history['accuracy'].append((server_round, weighted_accuracy))
             _loss_str = f"{weighted_test_loss:.4f}" if weighted_test_loss is not None else "N/A"
             print(f"[Server] Round {server_round} - Avg Test Loss: {_loss_str}, Avg Accuracy: {weighted_accuracy:.4f}")
-        
-        # Quan trọng: Trả metrics về Flower History để log và vẽ biểu đồ accuracy
+
+        # Return metrics to Flower History (for accuracy curve in plot)
         out_metrics = dict(aggregated_metrics) if aggregated_metrics else {}
         if weighted_test_loss is not None:
             out_metrics['test_loss'] = float(weighted_test_loss)
         if weighted_accuracy is not None:
             out_metrics['accuracy'] = float(weighted_accuracy)
-        
-        # Flower chỉ ghi history khi loss_fed is not None; đảm bảo có loss (trung bình client)
+
+        # Flower only records history when aggregated_loss is not None
         if aggregated_loss is None and results:
             losses = [float(evaluate_res.loss) for _, evaluate_res in results if evaluate_res.loss is not None]
             if losses:
                 aggregated_loss = float(sum(losses) / len(losses))
-        
+
         return aggregated_loss, out_metrics
 
 
 def get_initial_parameters(model: nn.Module) -> Parameters:
-    """
-    Get initial parameters từ model để khởi tạo server
-    
-    Args:
-        model: PyTorch model
-        
-    Returns:
-        Parameters object cho Flower
-    """
+
     shared_params = model.get_shared_parameters()
     
     # Convert to numpy arrays
@@ -210,20 +164,14 @@ def get_initial_parameters(model: nn.Module) -> Parameters:
 
 
 def _normalize_fl_root_config(config: Dict) -> Tuple[Dict, Dict]:
-    """
-    Chuẩn hoá config truyền vào Flower strategy.
-    - Có khóa 'federated': dùng full root để callbacks đọc training.*
-    - Chỉ có dict tham số FL (legacy): coi là federated-only.
-    """
+
     if config is not None and "federated" in config:
         return config["federated"], config
     return config, {"federated": config, "training": {}}
 
 
 def get_on_fit_config_fn(full_config: Dict):
-    """
-    Tạo config function cho training — ưu tiên training.local_epochs / batch_size / learning_rate.
-    """
+
     train = full_config.get("training", {}) or {}
     fed = full_config.get("federated", {}) or {}
 
@@ -240,9 +188,7 @@ def get_on_fit_config_fn(full_config: Dict):
 
 
 def get_on_evaluate_config_fn(full_config: Dict):
-    """
-    Config cho evaluate — batch_size từ training.
-    """
+
     train = full_config.get("training", {}) or {}
 
     def evaluate_config(server_round: int):
@@ -250,22 +196,14 @@ def get_on_evaluate_config_fn(full_config: Dict):
         return {
             "server_round": server_round,
             "batch_size": train.get("batch_size", 32),
+            "personalize_epochs": train.get("personalize_epochs_eval", 2),
         }
 
     return evaluate_config
 
 
 def create_fedper_strategy(model: nn.Module, config: Dict) -> FedPerStrategy:
-    """
-    Factory function để tạo FedPer strategy
-    
-    Args:
-        model: Initial model
-        config: Full YAML root (khuyến nghị) hoặc dict chỉ chứa tham số federated (legacy).
-        
-    Returns:
-        FedPerStrategy instance
-    """
+
     initial_parameters = get_initial_parameters(model)
     fed_cfg, full_root = _normalize_fl_root_config(config)
 
@@ -276,6 +214,7 @@ def create_fedper_strategy(model: nn.Module, config: Dict) -> FedPerStrategy:
         min_evaluate_clients=fed_cfg.get("min_evaluate_clients", 2),
         min_available_clients=fed_cfg.get("min_available_clients", 5),
         initial_parameters=initial_parameters,
+        global_model=model,
         on_fit_config_fn=get_on_fit_config_fn(full_root),
         on_evaluate_config_fn=get_on_evaluate_config_fn(full_root),
     )
@@ -287,15 +226,7 @@ def start_server(model: nn.Module,
                 config: Dict,
                 num_rounds: int = 50,
                 server_address: str = "0.0.0.0:8080"):
-    """
-    Start Federated Learning Server
-    
-    Args:
-        model: Initial model architecture
-        config: Configuration dict
-        num_rounds: Số rounds training
-        server_address: Server address
-    """
+
     # Create strategy
     strategy = create_fedper_strategy(model, config)
     fed_cfg, _ = _normalize_fl_root_config(config)

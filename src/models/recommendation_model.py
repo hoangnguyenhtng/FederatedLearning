@@ -60,29 +60,32 @@ class SharedRecommendationBase(nn.Module):
 class PersonalHead(nn.Module):
     """
     Personal head - KHÔNG SHARE, giữ riêng ở client
+    
+    ✅ Improved: Added LayerNorm for training stability
     """
     
     def __init__(self,
                  input_dim: int = 128,
-                 hidden_dims: list = [64, 32],
-                 num_classes: int = 5,  # ✅ ĐỔI TÊN: num_items → num_classes
+                 hidden_dims: list = [128, 64],
+                 num_classes: int = 5,
                  dropout: float = 0.2):
         super().__init__()
         
         layers = []
         prev_dim = input_dim
         
-        # Build personal layers
+        # Build personal layers with LayerNorm for stability
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
-                nn.ReLU(),
+                nn.GELU(),  # GELU works better than ReLU for classification
+                nn.LayerNorm(hidden_dim),
                 nn.Dropout(dropout)
             ])
             prev_dim = hidden_dim
         
         # Final output layer
-        layers.append(nn.Linear(prev_dim, num_classes))  # ✅ Dùng num_classes
+        layers.append(nn.Linear(prev_dim, num_classes))
         
         self.personal_network = nn.Sequential(*layers)
         
@@ -91,7 +94,7 @@ class PersonalHead(nn.Module):
         Args:
             x: Shared features (batch_size, input_dim)
         Returns:
-            logits: (batch_size, num_classes)  # ✅ Đổi comment
+            logits: (batch_size, num_classes)
         """
         return self.personal_network(x)
 
@@ -104,8 +107,8 @@ class FedPerRecommender(nn.Module):
     def __init__(self,
                  multimodal_encoder,
                  shared_hidden_dims: list = [512, 256, 128],
-                 personal_hidden_dims: list = [64, 32],
-                 num_classes: int = 5,  # ✅ ĐỔI TÊN: num_items → num_classes
+                 personal_hidden_dims: list = [128, 64],
+                 num_classes: int = 5,
                  dropout: float = 0.2):
         super().__init__()
         
@@ -118,27 +121,32 @@ class FedPerRecommender(nn.Module):
             dropout=dropout
         )
         
-        # Personal head
+        # ✅ Skip connection: project multimodal output to shared_base output dim
+        # This gives personal head access to both shared representation AND raw fusion
+        self.skip_projection = nn.Linear(384, shared_hidden_dims[-1])
+        self.skip_norm = nn.LayerNorm(shared_hidden_dims[-1])
+        
+        # Personal head (takes shared_features + skip connection)
         self.personal_head = PersonalHead(
-            input_dim=shared_hidden_dims[-1],
+            input_dim=shared_hidden_dims[-1],  # Same dim after skip addition
             hidden_dims=personal_hidden_dims,
-            num_classes=num_classes,  # ✅ Dùng num_classes
+            num_classes=num_classes,
             dropout=dropout
         )
         
     def forward(self, text_emb, image_emb, behavior_features, 
                 return_fusion_weights=False):
         """
-        Forward pass
+        Forward pass with residual skip connection
         
         Args:
             text_emb: (batch_size, 384)
-            image_emb: (batch_size, 384)
-            behavior_features: (batch_size, 50)
+            image_emb: (batch_size, 2048)
+            behavior_features: (batch_size, 32)
             return_fusion_weights: Return fusion weights
             
         Returns:
-            logits: (batch_size, num_classes)  # ✅ Đổi comment
+            logits: (batch_size, num_classes)
             fusion_weights (optional): (batch_size, 3)
         """
         # Step 1: Multi-modal fusion
@@ -154,8 +162,13 @@ class FedPerRecommender(nn.Module):
         # Step 2: Shared base
         shared_features = self.shared_base(user_emb)
         
-        # Step 3: Personal head
-        logits = self.personal_head(shared_features)
+        # Step 3: ✅ Residual skip connection from multimodal output
+        # personal_input = shared_features + projected(multimodal_output)
+        skip = self.skip_projection(user_emb)
+        personal_input = self.skip_norm(shared_features + skip)
+        
+        # Step 4: Personal head
+        logits = self.personal_head(personal_input)
         
         if return_fusion_weights:
             return logits, fusion_weights
@@ -174,6 +187,12 @@ class FedPerRecommender(nn.Module):
         # Shared base parameters (bắt buộc share)
         for name, param in self.shared_base.named_parameters():
             shared_params[f"shared_base.{name}"] = param
+        
+        # Skip connection parameters (shared)
+        for name, param in self.skip_projection.named_parameters():
+            shared_params[f"skip_projection.{name}"] = param
+        for name, param in self.skip_norm.named_parameters():
+            shared_params[f"skip_norm.{name}"] = param
             
         return shared_params
     
