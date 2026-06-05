@@ -47,6 +47,15 @@ class FedPerStrategy(FedAvg):
             'accuracy': [],
             'round': []
         }
+
+        # ✅ Early stopping to prevent overfitting
+        self.best_loss = float('inf')
+        self.best_accuracy = 0.0
+        self.patience_counter = 0
+        self.patience = 15  # Stop if no improvement for 15 rounds
+        self.best_round = 0
+        self._best_params = None  # Cache best aggregated params
+        self._should_stop = False  # ✅ Flag to actually stop Flower simulation
         
     def aggregate_fit(self,
                      server_round: int,
@@ -149,7 +158,52 @@ class FedPerStrategy(FedAvg):
             if losses:
                 aggregated_loss = float(sum(losses) / len(losses))
 
+        # ✅ Early stopping check
+        check_loss = weighted_test_loss if weighted_test_loss is not None else aggregated_loss
+        if check_loss is not None:
+            if check_loss < self.best_loss - 0.001:
+                self.best_loss = check_loss
+                self.best_accuracy = weighted_accuracy or 0.0
+                self.patience_counter = 0
+                self.best_round = server_round
+                # Cache best parameters from global model
+                if self.global_model is not None:
+                    self._best_params = {
+                        k: v.detach().cpu().clone()
+                        for k, v in self.global_model.state_dict().items()
+                    }
+                print(f"[Server] ⭐ New best model at round {server_round}: "
+                      f"loss={check_loss:.4f}, accuracy={self.best_accuracy:.4f}")
+            else:
+                self.patience_counter += 1
+                print(f"[Server] ⏳ No improvement for {self.patience_counter}/{self.patience} rounds "
+                      f"(best: round {self.best_round}, loss={self.best_loss:.4f}, acc={self.best_accuracy:.4f})")
+
+            if self.patience_counter >= self.patience:
+                print(f"\n[Server] 🛑 EARLY STOPPING at round {server_round}!")
+                print(f"[Server] Best model was at round {self.best_round} "
+                      f"with loss={self.best_loss:.4f}, accuracy={self.best_accuracy:.4f}")
+                # Restore best model parameters
+                if self._best_params is not None and self.global_model is not None:
+                    self.global_model.load_state_dict(self._best_params)
+                    print(f"[Server] ✅ Restored best model parameters from round {self.best_round}")
+                self._should_stop = True  # ✅ Signal Flower to stop
+
         return aggregated_loss, out_metrics
+
+    def configure_fit(self, server_round, parameters, client_manager):
+        """Override to stop training when early stopping triggers."""
+        if self._should_stop:
+            print(f"[Server] ⏹️  Skipping fit round {server_round} (early stopped)")
+            return []  # Empty list → Flower skips this round
+        return super().configure_fit(server_round, parameters, client_manager)
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        """Override to stop evaluation when early stopping triggers."""
+        if self._should_stop:
+            print(f"[Server] ⏹️  Skipping evaluate round {server_round} (early stopped)")
+            return []  # Empty list → Flower skips this round
+        return super().configure_evaluate(server_round, parameters, client_manager)
 
 
 def get_initial_parameters(model: nn.Module) -> Parameters:

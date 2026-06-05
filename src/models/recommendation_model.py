@@ -67,7 +67,7 @@ class PersonalHead(nn.Module):
     def __init__(self,
                  input_dim: int = 128,
                  hidden_dims: list = [128, 64],
-                 num_classes: int = 5,
+                 num_classes: int = 3,
                  dropout: float = 0.2):
         super().__init__()
         
@@ -108,7 +108,7 @@ class FedPerRecommender(nn.Module):
                  multimodal_encoder,
                  shared_hidden_dims: list = [512, 256, 128],
                  personal_hidden_dims: list = [128, 64],
-                 num_classes: int = 5,
+                 num_classes: int = 3,
                  dropout: float = 0.2):
         super().__init__()
         
@@ -182,7 +182,7 @@ class FedPerRecommender(nn.Module):
         
         # Multimodal encoder parameters (có thể share hoặc không)
         for name, param in self.multimodal_encoder.named_parameters():
-            shared_params[f"multimodal.{name}"] = param
+            shared_params[f"multimodal_encoder.{name}"] = param
         
         # Shared base parameters (bắt buộc share)
         for name, param in self.shared_base.named_parameters():

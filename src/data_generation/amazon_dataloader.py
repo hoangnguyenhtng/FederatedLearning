@@ -25,6 +25,25 @@ class AmazonDataset(Dataset):
     def __len__(self):
         return len(self.data)
     
+    @staticmethod
+    def _map_label(rating):
+        """Map 5-star rating to 3-class sentiment.
+        
+        1-2★ → 0 (Negative)
+        3★   → 1 (Neutral)
+        4-5★ → 2 (Positive)
+        
+        This reduces the difficult 5-class problem (ceiling ~63%) to a
+        cleaner 3-class task where boundaries are more meaningful.
+        """
+        r = int(rating)
+        if r <= 2:
+            return 0  # Negative
+        elif r == 3:
+            return 1  # Neutral
+        else:
+            return 2  # Positive
+    
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
         
@@ -46,7 +65,7 @@ class AmazonDataset(Dataset):
         bfeat_mean = behavior_feat.mean()
         bfeat_std = behavior_feat.std() + 1e-8
         behavior_feat = (behavior_feat - bfeat_mean) / bfeat_std  # standardize to N(0,1)
-        behavior_feat = behavior_feat * 0.1  # scale down to match text/image magnitude
+        behavior_feat = behavior_feat * 0.3  # scale to balance with text/image (was 0.1, too aggressive)
         
         return {
             'user_id': torch.tensor(hash(str(row['user_id'])) % 100000, dtype=torch.long),
@@ -54,7 +73,7 @@ class AmazonDataset(Dataset):
             'text_embedding': text_emb,
             'image_embedding': image_emb,
             'behavior_features': behavior_feat,
-            'label': torch.tensor(row['label'], dtype=torch.long),
+            'label': torch.tensor(self._map_label(row['rating']), dtype=torch.long),
             'rating': torch.tensor(row['rating'], dtype=torch.long)
         }
 

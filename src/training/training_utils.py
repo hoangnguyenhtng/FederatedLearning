@@ -50,10 +50,11 @@ class MetricsCalculator:
         """
         # Get predicted scores (use softmax probabilities weighted by rating values)
         probs = torch.softmax(predictions, dim=1)
-        rating_values = torch.arange(1, 6, device=predictions.device).float()
+        num_cls = probs.shape[1]  # Dynamic: 3 or 5 classes
+        rating_values = torch.arange(1, num_cls + 1, device=predictions.device).float()
         predicted_ratings = (probs * rating_values).sum(dim=1)
         
-        # Convert targets (0-4) back to ratings (1-5)
+        # Convert targets back to 1-based ratings
         true_ratings = targets.float() + 1
         
         # Calculate DCG
@@ -79,7 +80,7 @@ class MetricsCalculator:
     @staticmethod
     def mrr(predictions: torch.Tensor, targets: torch.Tensor) -> float:
         """
-        MRR theo thứ hạng lớp đúng trong logits (5 lớp rating).
+        MRR theo thứ hạng lớp đúng trong logits.
         Mỗi mẫu: xếp hạng các lớp theo logit giảm dần, tìm vị trí của nhãn đúng (1-based), RR = 1/rank.
         """
         reciprocal_ranks: List[float] = []

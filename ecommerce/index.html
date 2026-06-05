@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="FedShop - Mua sắm thông minh với AI sử dụng Federated Learning">
+  <title>FedShop - AI Recommendations</title>
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css?v=20260526">
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛍️</text></svg>">
+</head>
+<body>
+
+  <!-- ====== OFFLINE BANNER ====== -->
+  <div class="offline-banner" id="offlineBanner">
+    🔌 Chế độ demo — Backend chưa kết nối
+  </div>
+
+  <!-- ====== LOGIN (Federated Client) ====== -->
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-card">
+      <div class="login-header">
+        <span class="login-logo">🛍️</span>
+        <h1>Đăng nhập FedShop</h1>
+        <p>Mỗi tài khoản = một <strong>Federated Client</strong> (silo dữ liệu riêng). Personal head học từ hành vi của bạn trên thiết bị.</p>
+      </div>
+      <div class="login-form">
+        <label for="clientSelect">Chi nhánh / Federated Client</label>
+        <select id="clientSelect" class="login-select"></select>
+
+        <label for="userSelect">Khách hàng trong silo</label>
+        <select id="userSelect" class="login-select"></select>
+
+        <p class="login-hint" id="loginHint">Chọn client để xem danh sách khách hàng.</p>
+
+        <button type="button" class="btn-login" id="btnLogin">Đăng nhập &amp; Mua sắm</button>
+        <button type="button" class="btn-login-offline" id="btnOffline">Vào shop ngay (không cần API)</button>
+      </div>
+      <p class="login-footer">🔒 Cần API đầy đủ: <code>python src/api/fastapi_app.py</code> rồi mở <strong>http://localhost:8000/shop</strong></p>
+    </div>
+  </div>
+
+  <!-- ====== FL STATUS BAR ====== -->
+  <div class="fl-status-bar" id="flStatusBar" hidden>
+    <span id="flUserLabel">—</span>
+    <span class="fl-divider">|</span>
+    <span id="flUpdateLabel">Personal head: chưa cập nhật</span>
+    <span class="fl-divider">|</span>
+    <span id="modelBadge" class="model-badge" title="Model đang dùng">Model: —</span>
+    <button type="button" class="btn-switch" id="btnSwitchAccount">Đổi tài khoản</button>
+    <button type="button" class="btn-logout" id="btnLogout">Đăng xuất</button>
+  </div>
+
+  <!-- ====== NAVIGATION BAR ====== -->
+  <nav class="navbar" id="navbar">
+    <div class="container">
+      <a href="#" class="navbar-logo">
+        <span class="logo-icon">🛍️</span>
+        <span class="logo-text">FedShop</span>
+      </a>
+
+      <div class="search-container">
+        <span class="search-icon">🔍</span>
+        <input
+          type="text"
+          class="search-bar"
+          id="searchBar"
+          placeholder="Tìm kiếm sản phẩm..."
+          autocomplete="off"
+        >
+      </div>
+
+      <button class="cart-btn" id="cartBtn" aria-label="Giỏ hàng">
+        🛒 <span class="cart-btn-text">Giỏ hàng</span>
+        <span class="cart-badge" id="cartBadge">0</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ====== HERO SECTION ====== -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-content">
+        <h1 class="hero-title">
+          Mua sắm theo sở thích<br>với <span class="gradient-text">gợi ý cá nhân</span>
+        </h1>
+        <p class="hero-subtitle" id="heroSubtitle">
+          Gợi ý sản phẩm theo lịch sử tương tác của bạn. Mỗi tài khoản thuộc một “chi nhánh” (client) với dữ liệu riêng.
+        </p>
+        <div class="hero-badges">
+          <span class="hero-badge">🔒 Dữ liệu cục bộ</span>
+          <span class="hero-badge">🧩 Cá nhân hoá (FedPer)</span>
+          <span class="hero-badge">🧾 Text • Ảnh • Hành vi</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== CATEGORIES ====== -->
+  <section class="section" id="categoriesSection">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="emoji">📂</span> Danh Mục
+        </h2>
+      </div>
+      <div class="category-grid" id="categoryGrid">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== AI RECOMMENDATIONS ====== -->
+  <section class="section recommendation-section" id="recSection">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="emoji">⭐</span> Gợi ý cho bạn
+        </h2>
+      </div>
+      <div class="rec-layout">
+        <div class="rec-scroll-container" id="recProducts">
+          <!-- Rendered by JS -->
+        </div>
+        <div class="fusion-widget" id="fusionWidget">
+          <div class="fusion-widget-header">
+          <div class="ai-icon">⚙</div>
+          <span>Tỷ trọng tín hiệu (tham khảo)</span>
+          </div>
+          <div class="fusion-bar">
+            <div class="fusion-bar-header">
+              <span class="fusion-bar-label">📝 Text Analysis</span>
+              <span class="fusion-bar-value" id="fusionText">45%</span>
+            </div>
+            <div class="fusion-bar-track">
+              <div class="fusion-bar-fill text" id="fusionTextBar" style="width: 45%"></div>
+            </div>
+          </div>
+          <div class="fusion-bar">
+            <div class="fusion-bar-header">
+              <span class="fusion-bar-label">🖼️ Image Analysis</span>
+              <span class="fusion-bar-value" id="fusionImage">30%</span>
+            </div>
+            <div class="fusion-bar-track">
+              <div class="fusion-bar-fill image" id="fusionImageBar" style="width: 30%"></div>
+            </div>
+          </div>
+          <div class="fusion-bar">
+            <div class="fusion-bar-header">
+              <span class="fusion-bar-label">👤 Behavior</span>
+              <span class="fusion-bar-value" id="fusionBehavior">25%</span>
+            </div>
+            <div class="fusion-bar-track">
+              <div class="fusion-bar-fill behavior" id="fusionBehaviorBar" style="width: 25%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== ALL PRODUCTS ====== -->
+  <section class="section" id="productsSection">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">
+          <span class="emoji">🛒</span> Tất Cả Sản Phẩm
+        </h2>
+        <select class="sort-select" id="sortSelect">
+          <option value="default">Sắp xếp: Mặc định</option>
+          <option value="price-asc">Giá: Thấp → Cao</option>
+          <option value="price-desc">Giá: Cao → Thấp</option>
+          <option value="rating">Đánh giá cao nhất</option>
+          <option value="name">Tên: A → Z</option>
+        </select>
+      </div>
+      <div class="product-grid" id="productGrid">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== PRODUCT DETAIL MODAL ====== -->
+  <div class="modal-overlay" id="productModal">
+    <div class="modal">
+      <button class="modal-close" id="modalClose" aria-label="Đóng">✕</button>
+      <div class="modal-body" id="modalBody">
+        <!-- Rendered by JS -->
+      </div>
+      <div class="similar-section" id="similarSection">
+        <h3>🔗 Sản phẩm tương tự</h3>
+        <div class="similar-grid" id="similarGrid">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== CART SIDEBAR ====== -->
+  <div class="cart-overlay" id="cartOverlay"></div>
+  <aside class="cart-sidebar" id="cartSidebar">
+    <div class="cart-header">
+      <h2>🛒 Giỏ Hàng</h2>
+      <button class="cart-close" id="cartClose" aria-label="Đóng giỏ hàng">✕</button>
+    </div>
+    <div class="cart-items" id="cartItems">
+      <!-- Rendered by JS -->
+    </div>
+    <div class="cart-footer">
+      <div class="cart-total">
+        <span class="cart-total-label">Tổng cộng:</span>
+        <span class="cart-total-value" id="cartTotal">0₫</span>
+      </div>
+      <button class="btn-checkout" id="checkoutBtn">
+        💳 Thanh Toán
+      </button>
+    </div>
+  </aside>
+
+  <!-- ====== FOOTER ====== -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <div class="footer-logo">
+            🛍️ <span>FedShop</span>
+          </div>
+          <p>
+            Nền tảng mua sắm thông minh sử dụng Federated Learning 
+            để gợi ý sản phẩm cá nhân hóa. Dữ liệu của bạn luôn được 
+            bảo mật và không rời khỏi thiết bị.
+          </p>
+        </div>
+        <div class="footer-col">
+          <h4>Kiến Trúc FL</h4>
+          <ul>
+            <li><a href="#">FedPer Architecture</a></li>
+            <li><a href="#">Multimodal Fusion</a></li>
+            <li><a href="#">Behavior Tracking</a></li>
+            <li><a href="#">Privacy-First</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>Thông Tin</h4>
+          <ul>
+            <li><a href="#">Về FedShop</a></li>
+            <li><a href="#">Công Nghệ</a></li>
+            <li><a href="#">Liên Hệ</a></li>
+            <li><a href="#">GitHub Repo</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>© 2026 FedShop — Federated Learning E-Commerce Demo</p>
+        <div class="footer-privacy">
+          🔒 Dữ liệu được bảo mật bởi Federated Learning
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ====== ACTIVITY LOG (chứng minh API + FL) ====== -->
+  <aside class="activity-panel" id="activityPanel" hidden aria-label="Nhật ký sự kiện">
+    <div class="activity-panel-header">
+      <div class="activity-panel-title">
+        <span>📡</span>
+        <span>Sự kiện vừa gửi</span>
+        <span class="activity-api-badge" id="activityApiBadge">API</span>
+      </div>
+      <button type="button" class="activity-panel-toggle" id="activityPanelToggle" aria-label="Thu gọn">−</button>
+    </div>
+    <div class="activity-panel-body" id="activityLogList">
+      <p class="activity-empty">Chưa có sự kiện — hãy xem sản phẩm hoặc thêm giỏ.</p>
+    </div>
+    <p class="activity-panel-foot" id="activityPanelFoot">POST /api/track-behavior</p>
+  </aside>
+
+  <!-- ====== TOAST CONTAINER ====== -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ====== APPLICATION SCRIPT ====== -->
+  <script src="app.js?v=20260526"></script>
+</body>
+</html>

@@ -101,7 +101,9 @@ class FedPerClient(fl.client.NumPyClient):
                  num_rounds: int = 100,
                  state_path: Optional[Union[str, Path]] = None,
                  personalize_epochs_eval: int = 2,
-                 loss_type: str = "weighted_ce"):
+                 loss_type: str = "weighted_ce",
+                 gradient_clip: float = 2.0,
+                 fedprox_mu: float = 0.0):
         """
         Args:
             client_id: ID của client
@@ -123,6 +125,7 @@ class FedPerClient(fl.client.NumPyClient):
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.device = device
+        self.gradient_clip = _f(gradient_clip, 2.0)
         self.local_epochs = int(local_epochs)
         self.learning_rate = _f(learning_rate, 1e-3)
         self.apply_dp = apply_dp
@@ -133,6 +136,7 @@ class FedPerClient(fl.client.NumPyClient):
         learning_rate = self.learning_rate
         weight_decay = self.weight_decay
         self._round = 0  # Track current round for scheduler
+        self.fedprox_mu = _f(fedprox_mu, 0.0)
         
         # Optimizer chỉ cho SHARED parameters
         self.optimizer_shared = optim.Adam(
@@ -155,45 +159,20 @@ class FedPerClient(fl.client.NumPyClient):
             weight_decay=weight_decay
         )
         
-        # ✅ FIX: Compute class weights from ACTUAL training data (not hardcoded)
-        # Scan train_loader to count class frequencies
-        class_counts = torch.zeros(5)
-        try:
-            for batch_data in self.train_loader:
-                if isinstance(batch_data, dict):
-                    labels = batch_data.get('label', batch_data.get('rating', torch.zeros(1)) - 1)
-                else:
-                    labels = batch_data[3]
-                labels = torch.clamp(labels, 0, 4)
-                for c in range(5):
-                    class_counts[c] += (labels == c).sum().item()
-        except Exception:
-            # Fallback: use known distribution from data analysis
-            class_counts = torch.tensor([17834., 11696., 19521., 32934., 138015.])
-        
-        # Inverse-frequency (normalized); train sampler also balances batches
-        total = class_counts.sum()
-        class_weights = total / (5.0 * class_counts.clamp(min=1.0))
-        class_weights = class_weights / class_weights.mean()
-        
-        print(f"[Client {self.client_id}] Class counts: {class_counts.tolist()}")
-        print(f"[Client {self.client_id}] Class weights: {class_weights.tolist()}")
-        
+        # ✅ FIX: NO class weights in loss — WeightedRandomSampler already balances batches.
+        # Using both sampler + weighted loss causes double compensation → overfits minority class.
         loss_type = str(loss_type).lower()
-
-        # Weighted CE: stable accuracy on imbalanced ratings (target ~0.7+)
-        # Focal loss optional via training.loss: focal
         if loss_type == "focal":
             self.criterion = FocalLoss(
-                alpha=class_weights,
-                gamma=2.0,
-                label_smoothing=0.05,
+                alpha=None,              # No class weights (sampler handles balance)
+                gamma=2.0,               # Focus on hard examples
+                label_smoothing=0.02,
             )
         else:
             self.criterion = nn.CrossEntropyLoss(
-                weight=class_weights.to(self.device),
-                label_smoothing=0.02,
+                label_smoothing=0.02,    # No weight= param (sampler handles balance)
             )
+        print(f"[Client {self.client_id}] Loss: {loss_type} (no class weights — sampler balances batches)")
 
         if self.state_path and self.state_path.exists():
             self.load_personal_state(self.state_path)
@@ -267,7 +246,7 @@ class FedPerClient(fl.client.NumPyClient):
 
             behavior_feat = batch_data["behavior_features"].to(self.device)
             labels = batch_data.get("label", batch_data["rating"] - 1).to(self.device)
-            labels = torch.clamp(labels, 0, 4)
+            labels = torch.clamp(labels, 0, 2)  # 3-class sentiment
 
             batch_size = behavior_feat.shape[0]
             if len(behavior_feat.shape) == 1:
@@ -301,7 +280,7 @@ class FedPerClient(fl.client.NumPyClient):
             text_emb = batch_data[0].to(self.device)
             image_emb = batch_data[1].to(self.device)
             behavior_feat = batch_data[2].to(self.device)
-            labels = torch.clamp(batch_data[3].to(self.device), 0, 4)
+            labels = torch.clamp(batch_data[3].to(self.device), 0, 2)  # 3-class sentiment
 
         return text_emb, image_emb, behavior_feat, labels
 
@@ -324,7 +303,7 @@ class FedPerClient(fl.client.NumPyClient):
                 labels_clamped = torch.clamp(labels, 0, logits.shape[1] - 1)
                 loss = self.criterion(logits, labels_clamped)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.personal_head.parameters(), max_norm=2.0)
+                torch.nn.utils.clip_grad_norm_(self.model.personal_head.parameters(), max_norm=self.gradient_clip)
                 self.optimizer_personal.step()
                 epoch_loss += loss.item()
             print(
@@ -413,6 +392,14 @@ class FedPerClient(fl.client.NumPyClient):
         total_loss = 0.0
         num_batches = 0
         
+        # ✅ FedProx: save global params snapshot for proximal term
+        global_params_snapshot = None
+        if self.fedprox_mu > 0:
+            global_params_snapshot = {
+                name: param.detach().clone()
+                for name, param in self.model.get_shared_parameters().items()
+            }
+        
         for epoch in range(self.local_epochs):
             epoch_loss = 0.0
             
@@ -427,33 +414,44 @@ class FedPerClient(fl.client.NumPyClient):
                 # Forward pass
                 logits = self.model(text_emb, image_emb, behavior_feat)
                 
-                # Validate labels are in valid range [0, 4] for rating prediction (5 classes)
-                num_classes = logits.shape[1]  # Should be 5 for rating prediction
+                # Validate labels are in valid range for 3-class sentiment
+                num_classes = logits.shape[1]  # 3 classes: Negative/Neutral/Positive
                 labels_clamped = torch.clamp(labels, 0, num_classes - 1)
                 if batch_idx == 0 and (labels != labels_clamped).any():
                     # Log warning if labels out of range (only first batch to avoid spam)
                     out_of_range = (labels < 0) | (labels >= num_classes)
                     if out_of_range.any():
                         print(f"⚠️  [Client {self.client_id}] Training Warning: {out_of_range.sum().item()} labels out of range [0, {num_classes-1}]")
-                        print(f"   Min label: {labels.min().item()}, Max label: {labels.max().item()}, Expected: [0, 4]")
+                        print(f"   Min label: {labels.min().item()}, Max label: {labels.max().item()}, Expected: [0, 2]")
                 
                 loss = self.criterion(logits, labels_clamped)
                 
-                # Backward pass
+                # ✅ FedProx: add proximal term μ/2 * ||w - w_global||²
+                if global_params_snapshot is not None:
+                    prox_term = 0.0
+                    for name, param in self.model.get_shared_parameters().items():
+                        if name in global_params_snapshot:
+                            prox_term += ((param - global_params_snapshot[name]) ** 2).sum()
+                    loss = loss + (self.fedprox_mu / 2.0) * prox_term
+                
+                # ✅ FIX: Check for NaN/Inf BEFORE backward (prevent gradient corruption)
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"⚠️  [Client {self.client_id}] NaN/Inf loss detected! Skipping batch")
+                    self.optimizer_shared.zero_grad()
+                    self.optimizer_personal.zero_grad()
+                    self.optimizer_multimodal.zero_grad()
+                    continue
+                
+                # Backward pass (safe — loss is finite)
                 loss.backward()
                 
                 # Gradient clipping to prevent explosion/NaN (relaxed for imbalanced data)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.gradient_clip)
                 
                 # Update all parameters (shared + personal)
                 self.optimizer_shared.step()
                 self.optimizer_personal.step()
                 self.optimizer_multimodal.step()
-                
-                # Check for NaN loss
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"⚠️  [Client {self.client_id}] NaN/Inf detected! Skipping batch")
-                    continue
                 
                 epoch_loss += loss.item()
                 num_batches += 1
@@ -514,8 +512,8 @@ class FedPerClient(fl.client.NumPyClient):
                 # Forward pass
                 logits = self.model(text_emb, image_emb, behavior_feat)
                 
-                # Validate labels are in valid range [0, 4] for rating prediction (5 classes)
-                num_classes = logits.shape[1]  # Should be 5 for rating prediction
+                # Validate labels are in valid range for 3-class sentiment
+                num_classes = logits.shape[1]  # 3 classes: Negative/Neutral/Positive
                 labels_clamped = torch.clamp(labels, 0, num_classes - 1)
                 
                 loss = self.criterion(logits, labels_clamped)
@@ -601,7 +599,8 @@ def create_client_fn(client_id: int,
         device=config.get('device', 'cpu'),
         local_epochs=config.get('local_epochs', 3),
         learning_rate=config.get('learning_rate', 0.001),
-        apply_dp=config.get('apply_dp', False)
+        apply_dp=config.get('apply_dp', False),
+        gradient_clip=config.get('gradient_clip', 2.0)
     )
     
     return client

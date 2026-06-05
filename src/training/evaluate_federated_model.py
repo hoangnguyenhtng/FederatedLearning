@@ -112,6 +112,72 @@ class FederatedEvaluator:
         model.eval()
         return model
 
+    def _personalize_head(self, model: nn.Module, train_loader, epochs: int = 3) -> None:
+        """Adapt personal head to latest shared weights (standard FedPer eval protocol)."""
+        if epochs <= 0:
+            return
+
+        shared_names = set(model.get_shared_parameters().keys())
+        for name, param in model.named_parameters():
+            param.requires_grad = name not in shared_names
+
+        model.train()
+        optimizer = torch.optim.Adam(
+            [p for p in model.personal_head.parameters() if p.requires_grad],
+            lr=0.001,
+        )
+        criterion = nn.CrossEntropyLoss()
+
+        for epoch in range(epochs):
+            for i, batch_data in enumerate(train_loader):
+                if i >= 10:  # Limit to 10 batches (320 samples) for fast personalization on CPU
+                    break
+                if isinstance(batch_data, dict):
+                    if "image_embedding" in batch_data:
+                        image_emb = batch_data["image_embedding"].to(self.device)
+                    elif "image_features" in batch_data:
+                        image_emb = batch_data["image_features"].to(self.device)
+                    else:
+                        bs = batch_data.get("label", batch_data.get("rating", torch.tensor([1]))).shape[0]
+                        image_emb = torch.randn(bs, 2048, device=self.device)
+
+                    behavior_feat = batch_data["behavior_features"].to(self.device)
+                    labels = batch_data.get("label", batch_data["rating"] - 1).to(self.device)
+                    labels = torch.clamp(labels, 0, 2)  # 3-class sentiment
+
+                    bs = behavior_feat.shape[0]
+                    if behavior_feat.shape[-1] != 32:
+                        if behavior_feat.shape[-1] < 32:
+                            pad = torch.zeros(bs, 32 - behavior_feat.shape[-1], device=self.device)
+                            behavior_feat = torch.cat([behavior_feat, pad], dim=1)
+                        else:
+                            behavior_feat = behavior_feat[:, :32]
+
+                    if "text_embedding" in batch_data:
+                        text_emb = batch_data["text_embedding"].to(self.device)
+                    else:
+                        text_emb = torch.randn(bs, 384, device=self.device)
+
+                    if image_emb.shape[-1] != 2048:
+                        image_emb = torch.randn(bs, 2048, device=self.device)
+                else:
+                    text_emb = batch_data[0].to(self.device)
+                    image_emb = batch_data[1].to(self.device)
+                    behavior_feat = batch_data[2].to(self.device)
+                    labels = batch_data[3].to(self.device)
+                    labels = torch.clamp(labels, 0, 2)  # 3-class sentiment
+
+                optimizer.zero_grad()
+                logits = model(text_emb, image_emb, behavior_feat)
+                num_classes = logits.shape[1]
+                labels_clamped = torch.clamp(labels, 0, num_classes - 1)
+                loss = criterion(logits, labels_clamped)
+                loss.backward()
+                optimizer.step()
+
+        for param in model.parameters():
+            param.requires_grad = True
+
     def _load_dataloaders(self) -> Dict[int, tuple]:
         """Load federated dataloaders (Amazon or synthetic)."""
         num_clients = self.config["federated"]["num_clients"]
@@ -191,7 +257,7 @@ class FederatedEvaluator:
 
                     behavior_feat = batch_data["behavior_features"].to(self.device)
                     labels = batch_data.get("label", batch_data["rating"] - 1).to(self.device)
-                    labels = torch.clamp(labels, 0, 4)
+                    labels = torch.clamp(labels, 0, 2)  # 3-class sentiment
 
                     bs = behavior_feat.shape[0]
                     if behavior_feat.shape[-1] != 32:
@@ -213,7 +279,7 @@ class FederatedEvaluator:
                     image_emb = batch_data[1].to(self.device)
                     behavior_feat = batch_data[2].to(self.device)
                     labels = batch_data[3].to(self.device)
-                    labels = torch.clamp(labels, 0, 4)
+                    labels = torch.clamp(labels, 0, 2)  # 3-class sentiment
 
                 logits = model(text_emb, image_emb, behavior_feat)
                 num_classes = logits.shape[1]
@@ -232,7 +298,8 @@ class FederatedEvaluator:
         avg_loss = total_loss / max(len(test_loader), 1)
         accuracy = correct / max(total, 1)
 
-        all_preds_t = torch.cat(all_preds) if all_preds else torch.zeros(1, 5)
+        num_cls = logits.shape[1] if all_preds else 3
+        all_preds_t = torch.cat(all_preds) if all_preds else torch.zeros(1, num_cls)
         all_targets_t = torch.cat(all_targets) if all_targets else torch.zeros(1).long()
 
         metrics = {
@@ -249,26 +316,117 @@ class FederatedEvaluator:
 
         return metrics
 
+    def _load_single_client_dataloader(self, cid: int) -> Optional[tuple]:
+        """Load dataloaders for a single client to save memory (lazy-load)."""
+        batch_size = self.config["training"]["batch_size"]
+        test_split = self.config["training"].get("test_split", 0.2)
+
+        amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
+        if amazon_dir is not None:
+            client_path = amazon_dir / f"client_{cid}" / "data.pkl"
+            if not client_path.exists():
+                return None
+            
+            import pandas as pd
+            from src.data_generation.amazon_dataloader import AmazonDataset
+            from torch.utils.data import DataLoader
+            
+            try:
+                client_df = pd.read_pickle(client_path)
+                n_test = int(len(client_df) * test_split)
+                # Shuffle
+                client_df = client_df.sample(frac=1, random_state=42 + cid).reset_index(drop=True)
+                test_df = client_df[:n_test]
+                train_df = client_df[n_test:]
+                
+                train_ds = AmazonDataset(train_df)
+                test_ds = AmazonDataset(test_df)
+                
+                train_loader = DataLoader(
+                    train_ds, batch_size=batch_size, shuffle=True,
+                    num_workers=0, pin_memory=False, drop_last=False
+                )
+                test_loader = DataLoader(
+                    test_ds, batch_size=batch_size, shuffle=False,
+                    num_workers=0, pin_memory=False, drop_last=False
+                )
+                return train_loader, test_loader
+            except Exception as e:
+                print(f"  ❌ Failed to load client {cid}: {e}")
+                return None
+        else:
+            # Synthetic
+            paths_cfg = self.config.get("paths") or {}
+            synthetic_dir = (project_root / paths_cfg.get("data_dir", "data") / "simulated_clients").resolve()
+            if synthetic_dir.exists():
+                from src.data_generation.federated_dataloader import get_federated_dataloaders
+                loaders_list = get_federated_dataloaders(
+                    num_clients=cid + 1,
+                    data_dir=synthetic_dir,
+                    batch_size=batch_size,
+                    test_split=test_split,
+                )
+                if len(loaders_list) > cid:
+                    loaders = loaders_list[cid]
+                    if loaders and len(loaders) == 2 and loaders[0] and loaders[1]:
+                        return loaders[0], loaders[1]
+            return None
+
     def evaluate_all_clients(
         self,
         model: nn.Module,
         client_ids: Optional[List[int]] = None,
+        personalize_epochs: int = 3,
     ) -> List[Dict]:
         """Evaluate model on all (or selected) clients."""
-        dataloaders = self._load_dataloaders()
-
+        # Determine client_ids if not specified
         if client_ids is None:
-            client_ids = sorted(dataloaders.keys())
+            amazon_dir = resolve_amazon_federated_data_dir(self.config, cwd=project_root)
+            if amazon_dir is not None:
+                client_ids = [int(p.name.split("_")[1]) for p in amazon_dir.glob("client_*")]
+                client_ids = sorted(client_ids)
+            else:
+                paths_cfg = self.config.get("paths") or {}
+                synthetic_dir = (project_root / paths_cfg.get("data_dir", "data") / "simulated_clients").resolve()
+                if synthetic_dir.exists():
+                    client_ids = [int(p.name.split("_")[1]) for p in synthetic_dir.glob("client_*")]
+                    client_ids = sorted(client_ids)
+                else:
+                    client_ids = list(range(self.config["federated"]["num_clients"]))
 
-        print(f"\n📊 Evaluating {len(client_ids)} clients...")
+        print(f"\n📊 Evaluating {len(client_ids)} clients sequentially (optimized memory)...")
         results = []
 
         for cid in client_ids:
-            if cid not in dataloaders:
+            loaders = self._load_single_client_dataloader(cid)
+            if loaders is None:
                 print(f"  ⚠️  Client {cid}: no data, skipping")
                 continue
 
-            _, test_loader = dataloaders[cid]
+            train_loader, test_loader = loaders
+
+            # Load personalized head for this client if state file exists
+            state_path = self.experiment_dir / "client_states" / f"client_{cid}.pt"
+            if state_path.exists():
+                try:
+                    payload = torch.load(state_path, map_location=str(self.device), weights_only=False)
+                    personal = payload.get("personal") or {}
+                    current = model.state_dict()
+                    for name, param in personal.items():
+                        if name in current:
+                            current[name] = param.to(self.device)
+                    model.load_state_dict(current, strict=False)
+                    print(f"  Client {cid}: Loaded personalized head from {state_path.name}")
+                except Exception as e:
+                    print(f"  ⚠️  Client {cid}: Could not load personal state: {e}")
+            else:
+                print(f"  ⚠️  Client {cid}: No personalized state found, using global head")
+
+            # ✅ Personalize the head before testing (standard FedPer eval protocol)
+            if personalize_epochs > 0:
+                print(f"  Client {cid}: Personalizing head for {personalize_epochs} epochs...")
+                self._personalize_head(model, train_loader, epochs=personalize_epochs)
+
             metrics = self._evaluate_client(model, test_loader)
             metrics["client_id"] = cid
             results.append(metrics)
@@ -279,6 +437,11 @@ class FederatedEvaluator:
                 f"Loss={metrics['loss']:.4f}, "
                 f"Samples={metrics['num_samples']}"
             )
+
+            # ✅ Free memory by garbage collecting loaders
+            del train_loader, test_loader, loaders
+            import gc
+            gc.collect()
 
         return results
 
@@ -403,6 +566,8 @@ def main():
                         help="Experiment directory containing checkpoint")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to model checkpoint (.pt)")
+    parser.add_argument("--personalize-epochs", type=int, default=3,
+                        help="Number of epochs to personalize head before evaluation")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -416,7 +581,10 @@ def main():
 
     model = evaluator.load_model(checkpoint_path=args.checkpoint)
 
-    results = evaluator.evaluate_all_clients(model)
+    results = evaluator.evaluate_all_clients(
+        model,
+        personalize_epochs=args.personalize_epochs
+    )
 
     if not results:
         print("\n❌ No results — check data availability")

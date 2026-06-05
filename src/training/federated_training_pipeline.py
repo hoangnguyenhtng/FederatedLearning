@@ -165,9 +165,13 @@ class FederatedTrainingPipeline:
         
         # Get layer configurations
         shared_dims = model_config.get('shared_hidden_dims', [512, 256, 128])
-        personal_dims = model_config.get('personal_hidden_dims', [64, 32])
+        # Support both 'personal_hidden_dims' (list) and 'personal_hidden_dim' (scalar)
+        personal_dims = model_config.get('personal_hidden_dims')
+        if personal_dims is None:
+            phd = model_config.get('personal_hidden_dim', 128)
+            personal_dims = [int(phd), int(phd) // 2]
         # Rating prediction: 5 classes (ratings 1-5, mapped to 0-4)
-        num_classes = model_config.get('num_classes', 5)  # Changed from 10000 to 5
+        num_classes = model_config.get('num_classes', 3)  # 3-class sentiment
         dropout = model_config.get('dropout', 0.2)
 
         model = FedPerRecommender(
@@ -280,6 +284,23 @@ class FederatedTrainingPipeline:
         client_model = copy.deepcopy(self.global_model)
         client_model.to(self.device)
 
+        # ── Pre-load personal head state into model BEFORE creating FedPerClient ──
+        # Critical: Without this, deepcopy gives random personal head every round,
+        # causing accuracy to plateau because personal head never accumulates knowledge.
+        state_path = self.client_states_dir / f"client_{cid}.pt"
+        if state_path.exists():
+            try:
+                payload = torch.load(state_path, map_location=str(self.device), weights_only=False)
+                personal = payload.get("personal") or {}
+                current = client_model.state_dict()
+                for name, param in personal.items():
+                    if name in current:
+                        current[name] = param.to(self.device)
+                client_model.load_state_dict(current, strict=False)
+                logger.debug(f"✅ Pre-loaded personal head for client {cid} (round {payload.get('round', '?')})")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not pre-load personal state for client {cid}: {e}")
+
         # ── Build Flower client ───────────────────────────────────────
         tr_cfg = self.config["training"]
         fed_cfg = self.config["federated"]
@@ -298,6 +319,8 @@ class FederatedTrainingPipeline:
             state_path=state_path,
             personalize_epochs_eval=config_int(tr_cfg.get("personalize_epochs_eval"), 2),
             loss_type=str(tr_cfg.get("loss", "weighted_ce")),
+            gradient_clip=config_float(tr_cfg.get("gradient_clip"), 2.0),
+            fedprox_mu=config_float(fed_cfg.get("fedprox_mu"), 0.0),
         )
         try:
             client = numpy_client.to_client()
@@ -327,19 +350,24 @@ class FederatedTrainingPipeline:
 
             from src.data_generation.amazon_dataloader import AmazonDataset
             from torch.utils.data import WeightedRandomSampler
-
             train_ds = AmazonDataset(train_df)
-            labels = train_df["label"].astype(int).values
-            class_counts = np.bincount(labels, minlength=5).astype(np.float64)
-            sample_weights = 1.0 / class_counts[labels].clip(min=1.0)
-            train_sampler = WeightedRandomSampler(
+            
+            # ✅ WeightedRandomSampler: oversample minority classes
+            # Map 5-star ratings to 3-class sentiment: 1-2★→0(Neg), 3★→1(Neu), 4-5★→2(Pos)
+            raw_ratings = train_df['rating'].values.astype(int)
+            train_labels = np.where(raw_ratings <= 2, 0, np.where(raw_ratings == 3, 1, 2))
+            label_counts = np.bincount(train_labels, minlength=3).astype(float)
+            label_counts = np.maximum(label_counts, 1.0)  # Avoid division by zero
+            sample_weights = 1.0 / label_counts[train_labels]
+            sampler = WeightedRandomSampler(
                 weights=torch.from_numpy(sample_weights).double(),
-                num_samples=len(train_ds),
+                num_samples=len(sample_weights),
                 replacement=True,
             )
+            
             train_loader = DataLoader(
                 train_ds, batch_size=self.batch_size,
-                sampler=train_sampler, shuffle=False,
+                sampler=sampler,  # ✅ Replaces shuffle=True
                 num_workers=0, pin_memory=False, drop_last=False,
             )
             test_loader = DataLoader(
@@ -372,8 +400,9 @@ class FederatedTrainingPipeline:
             config=self.config,
         )
 
-        # Create client function
+        # Create client function (lazy loading — each client loads data on demand)
         client_fn = self._client_fn
+
         
         # Configure simulation
         num_rounds = self.config['federated']['num_rounds']
@@ -402,13 +431,35 @@ class FederatedTrainingPipeline:
 
             os.environ.setdefault("RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE", "1")
             os.environ.setdefault("RAY_DEDUP_LOGS", "1")
+            # Tat memory monitor cua Ray de tranh false positive tren Windows
+            os.environ["RAY_memory_monitor_refresh_ms"] = "0"
+            
+            # ----------------------------------------------------------------
+            # Tinh toan object_store_memory an toan cho Ray
+            # ----------------------------------------------------------------
+            import psutil
+            total_ram     = psutil.virtual_memory().total
+            available_ram = psutil.virtual_memory().available
+
+            # Object store: 10% of available RAM, min 256MB, max 512MB
+            obj_store_mb  = max(256, min(512, int(available_ram * 0.10 / (1024**2))))
+            obj_store_bytes = obj_store_mb * 1024 * 1024
+
+            # _memory: set explicitly to bypass Ray validation check.
+            explicit_memory_bytes = min(
+                4 * 1024 * 1024 * 1024,           # 4 GB hard cap
+                int(total_ram * 0.60),              # 60% of physical RAM
+            )
+
+            logger.info(f"RAM total: {total_ram/1024**3:.1f}GB, Available: {available_ram/1024**3:.1f}GB")
+            logger.info(f"Ray object_store: {obj_store_mb}MB, task memory: {explicit_memory_bytes/1024**3:.1f}GB")
 
             ray_init_args = {
                 "ignore_reinit_error": True,
                 "include_dashboard": False,
-                # 512 MB object store — enough for model weights only (lazy data load)
-                "object_store_memory": 512 * 1024 * 1024,
-                "num_cpus": min(6, os.cpu_count() or 4),
+                "object_store_memory": obj_store_bytes,
+                "_memory": explicit_memory_bytes,
+                "num_cpus": min(4, os.cpu_count() or 2),
             }
             
             history = fl.simulation.start_simulation(
@@ -556,6 +607,12 @@ class FederatedTrainingPipeline:
 
 def main(config_path: Optional[str] = None):
     """Main entry point."""
+    # Fix Unicode encoding on Windows console
+    if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass  # Older Python or non-reconfigurable stream
     cfg_arg = config_path
     if cfg_arg is None:
         parser = argparse.ArgumentParser(description="Federated training (FedPer)")
@@ -597,9 +654,9 @@ def main(config_path: Optional[str] = None):
     print("FEDERATED MULTI-MODAL RECOMMENDATION SYSTEM")
     print("Training Pipeline with FedPer Architecture")
     print("="*70)
-    print(f"📄 Config: {resolved}")
-    print(f"📁 Experiment directory: {exp_dir}")
-    print(f"🖥️  Using device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
+    print(f"[CONFIG]  {resolved}")
+    print(f"[DIR]     {exp_dir}")
+    print(f"[DEVICE]  {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print("")
     
     # Create and run pipeline

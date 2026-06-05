@@ -1,12 +1,14 @@
 # Federated Learning Configuration
 federated:
-  num_clients: 10
-  num_rounds: 100                
-
-  fraction_fit: 0.6              
-  fraction_evaluate: 1.0         
-  min_fit_clients: 6             
-  min_evaluate_clients: 10       
+  num_clients: 40                # 40 clients: 10 per domain (Beauty/Games/Fashion/Baby)
+  num_rounds: 100                # 100 rounds for thesis convergence
+  
+  # Client selection  (scaled for 40 clients)
+  fraction_fit: 0.5              # 50% = 20 clients/round (better convergence)
+  fraction_evaluate: 0.5         # 50% = 20 clients for evaluation
+  min_fit_clients: 16            # At least 16 clients per round
+  min_evaluate_clients: 16       # Evaluate on 16 clients minimum
+  min_available_clients: 40      # All 40 must be available
   
   # FedPer specific
   shared_layers: 3               # Number of shared layers
@@ -16,7 +18,7 @@ federated:
   aggregation_method: "fedavg"   # fedavg, fedprox, fedadam
   
   # FedProx specific
-  mu: 0.01                       # Proximal term coefficient
+  fedprox_mu: 0.01               # Proximal term coefficient (must be 'fedprox_mu' not 'mu')
 
 
 # ============================================================================
@@ -40,8 +42,8 @@ model:
   personal_hidden_dims: [64, 32]         # Personal head layers
   
   # Output configuration
-  # Rating prediction: 5 classes (ratings 1-5, mapped to 0-4)
-  num_classes: 5                 # Number of rating classes (1-5 → 0-4)
+  # 3-class sentiment: Negative(1-2★) / Neutral(3★) / Positive(4-5★)
+  num_classes: 3
   dropout: 0.2
   
   # Fusion module
@@ -98,11 +100,12 @@ vector_db:
 training:
   # Optimization
   # Reduced batch size for Windows stability (avoid Ray memory issues)
-  batch_size: 32                 # Increased back to 32 (more stable with gradient clipping)
-  local_epochs: 5                # Increased from 3 (more local learning per round)
-  learning_rate: 0.0001          # Restored to 0.0001 (gradient clipping prevents NaN)
+  batch_size: 16                 # Reduced to 16 to fit in 16GB RAM and RTX 2080Ti VRAM safely
+  local_epochs: 2                # Reduced to limit client drift on non-IID data
+  learning_rate: 0.001           # Tăng từ 0.0001 để model học nhanh hơn (gradient clipping ngăn NaN)
   optimizer: "adam"
   weight_decay: 0.0001           # Increased from 1e-5 (use decimal; PyYAML may parse 1e-4 as str)
+  loss: focal                    # focal | weighted_ce
   gradient_clip: 1.0             # Clip gradients to prevent NaN
   
   # Learning rate schedule
@@ -119,6 +122,8 @@ training:
   # DataLoader
   num_workers: 0                 # Set to 0 for Windows
   pin_memory: false
+  test_split: 0.2
+  personalize_epochs_eval: 2
 
 # Evaluation
 evaluation:
@@ -146,7 +151,7 @@ api:
 paths:
   data_dir: "./data"
   data_raw: "./data/raw"
-  data_processed: "./data/processed"
+  data_processed: "./data/amazon_2023_processed"  # 40-client thesis dataset
   models_dir: "models"
   experiments_dir: "experiments"
   logs_dir: "logs"

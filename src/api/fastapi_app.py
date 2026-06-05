@@ -3,6 +3,8 @@ FastAPI Recommendation API
 Provides endpoints for personalized recommendations with explainability
 """
 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -28,6 +30,8 @@ from src.models.multimodal_encoder import MultiModalEncoder
 from src.models.recommendation_model import FedPerRecommender
 from src.vector_db.milvus_manager import MilvusManager
 from src.api.metrics_calculator import MetricsCalculator, explain_recommendation
+from src.api.inference_service import CatalogEmbeddingCache, UserBehaviorTracker, RecommendationEngine
+from src.api.demo_session import DemoSessionManager, OnlinePersonalizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +56,12 @@ items_df = None
 users_df = None
 device = None
 metrics_calculator = None
+catalog_cache = None
+behavior_tracker = None
+recommendation_engine = None
+demo_sessions: Optional[DemoSessionManager] = None
+online_personalizer: Optional[OnlinePersonalizer] = None
+app_config: Dict[str, Any] = {}
 
 PRIVACY_DEMO_SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
 PRIVACY_DEMO_BUFFER_MAX = 24
@@ -257,10 +267,23 @@ class HealthResponse(BaseModel):
     num_users: int
 
 
+class ModelInfoResponse(BaseModel):
+    """Expose embedded model names for demos."""
+    ok: bool
+    device: str
+    architecture: str
+    text_model: Optional[str] = None
+    image_model: Optional[str] = None
+    notes: Optional[str] = None
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize models and data on startup"""
     global model, milvus_manager, items_df, users_df, device, metrics_calculator
+    global catalog_cache, behavior_tracker, recommendation_engine
+    global demo_sessions, online_personalizer
+    global app_config
     
     logger.info("🚀 Starting up API server...")
 
@@ -277,6 +300,7 @@ async def startup_event():
                 config = yaml.safe_load(f)
         else:
             config = {}
+        app_config = config or {}
 
         logger.info("📂 Loading data...")
         amazon_dir = project_root / "data" / "amazon_2023_processed"
@@ -391,6 +415,27 @@ async def startup_event():
         
         logger.info("✅ Model loaded")
 
+        # Initialize inference service for e-commerce
+        logger.info("📦 Initializing catalog cache and recommendation engine...")
+        try:
+            catalog_cache = CatalogEmbeddingCache()
+            catalog_cache.load_from_client_data(
+                str(project_root / "data" / "processed" / "multi_category"),
+                max_clients=40
+            )
+            behavior_tracker = UserBehaviorTracker()
+            recommendation_engine = RecommendationEngine(model, catalog_cache, behavior_tracker)
+            demo_sessions = DemoSessionManager(project_root)
+            online_personalizer = OnlinePersonalizer(model, device)
+            logger.info(f"✅ Recommendation engine ready with {len(catalog_cache.item_embeddings)} cached items!")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize recommendation engine: {e}")
+            catalog_cache = None
+            behavior_tracker = None
+            recommendation_engine = None
+            demo_sessions = DemoSessionManager(project_root)
+            online_personalizer = None
+
         global _catalog_title_by_item_id
         _catalog_title_by_item_id = None
         
@@ -429,6 +474,25 @@ async def health_check():
         milvus_connected=milvus_manager is not None,
         num_items=len(items_df) if items_df is not None else 0,
         num_users=len(users_df) if users_df is not None else 0
+    )
+
+
+@app.get("/api/model-info", response_model=ModelInfoResponse)
+async def model_info():
+    """Return model names used in this deployment (for demos/UI)."""
+    processing = (app_config.get("processing") or {}) if isinstance(app_config, dict) else {}
+    text_model = processing.get("text_model")
+    image_model = processing.get("image_model")
+    arch = type(model).__name__ if model is not None else "unloaded"
+    dev = str(device) if device is not None else "unknown"
+    notes = "FedPerRecommender + MultiModalEncoder; personal head stays per client/session."
+    return ModelInfoResponse(
+        ok=True,
+        device=dev,
+        architecture=arch,
+        text_model=str(text_model) if text_model else None,
+        image_model=str(image_model) if image_model else None,
+        notes=notes,
     )
 
 
@@ -661,6 +725,48 @@ async def get_recommendations(request: RecommendationRequest):
             raise HTTPException(status_code=404, detail=f"User {request.user_id} not found")
         
         user = users_df.iloc[request.user_id]
+
+        if recommendation_engine is not None and catalog_cache is not None and catalog_cache.is_loaded:
+            session_id = f"user_session_{request.user_id}"
+            res = recommendation_engine.get_recommendations(
+                session_id=session_id,
+                top_k=request.top_k
+            )
+            
+            recs = []
+            for rank, item in enumerate(res["recommendations"], 1):
+                recs.append(RecommendationItem(
+                    item_id=item["item_id"],
+                    name=item["title"],
+                    category=item["category"],
+                    score=float(item["predicted_rating"]),
+                    rank=rank,
+                    probability_percent=float(item["confidence"]) * 100.0,
+                    text_contribution=float(res["fusion_weights"]["text"]),
+                    image_contribution=float(res["fusion_weights"]["image"]),
+                    behavior_contribution=float(res["fusion_weights"]["behavior"]),
+                    avg_rating=float(item["rating"]),
+                    num_ratings=int(item["review_count"]),
+                    price=float(item["price"]),
+                    image_url=item["image_url"] or None
+                ))
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            return RecommendationResponse(
+                user_id=request.user_id,
+                recommendations=recs,
+                user_preference_type=str(user.get("preference_type", "amazon_user") if hasattr(user, 'get') else "amazon_user"),
+                fusion_weights={
+                    "text": float(res["fusion_weights"]["text"]),
+                    "image": float(res["fusion_weights"]["image"]),
+                    "behavior": float(res["fusion_weights"]["behavior"]),
+                },
+                timestamp=datetime.now().isoformat(),
+                processing_time_ms=processing_time,
+                output_classes=res["total_candidates"],
+                score_explanation="Sử dụng mô hình FedPer thực tế kết hợp Multimodal Embeddings (Text + Image) và Behavior."
+            )
         
         # 2. Generate user embedding (simplified - normally from interaction history)
         # Create dummy features for demo with CORRECT dimensions
@@ -983,9 +1089,319 @@ async def get_performance_metrics():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ======================================================================
+# E-commerce & Demo Auth Endpoints
+# ======================================================================
+
+def _resolve_demo_session(session_id: str) -> Optional[Dict[str, Any]]:
+    if demo_sessions is None:
+        return None
+    return demo_sessions.get_session(session_id)
+
+
+def _format_catalog_products(meta_list: list) -> list:
+    out = []
+    for m in meta_list:
+        out.append({
+            "id": m.get("id", m.get("item_id", "")),
+            "title": m.get("title", "Sản phẩm"),
+            "description": m.get("description", ""),
+            "category": m.get("category", ""),
+            "price": m.get("price", 0),
+            "rating": m.get("rating", 4),
+            "review_count": m.get("review_count", 0),
+            "image_url": m.get("image_url", ""),
+            "image_fallback": m.get("image_fallback", ""),
+        })
+    return out
+
+
+@app.get("/api/auth/clients")
+async def list_federated_clients():
+    """40 federated clients — mỗi client = một silo / chi nhánh."""
+    if demo_sessions is None:
+        raise HTTPException(status_code=503, detail="Demo session manager not ready")
+    return {"clients": demo_sessions.list_clients()}
+
+
+@app.get("/api/auth/clients/{client_id}/users")
+async def list_client_users(client_id: int, limit: int = 12):
+    if demo_sessions is None:
+        raise HTTPException(status_code=503, detail="Demo session manager not ready")
+    if client_id < 0 or client_id > 39:
+        raise HTTPException(status_code=400, detail="client_id must be 0–39")
+    return {"users": demo_sessions.list_users_for_client(client_id, limit=limit)}
+
+
+@app.post("/api/auth/login")
+async def demo_login(payload: dict):
+    """
+    Đăng nhập với federated client + khách hàng (user trong silo dữ liệu).
+    Trả session_id dùng cho recommend / track / cập nhật personal head.
+    """
+    if demo_sessions is None:
+        raise HTTPException(status_code=503, detail="Demo session manager not ready")
+
+    client_id = int(payload.get("client_id", 0))
+    user_id = payload.get("user_id")
+    try:
+        sess = demo_sessions.create_session(client_id, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    products = []
+    if catalog_cache and catalog_cache.is_loaded:
+        products = catalog_cache.get_products_for_client(
+            client_id, category=sess.get("category"), limit=80
+        )
+
+    if online_personalizer is not None:
+        online_personalizer.ensure_client(client_id)
+
+    return {
+        **sess,
+        "products": products,
+    }
+
+
+@app.get("/api/session/{session_id}")
+async def get_demo_session_info(session_id: str):
+    sess = _resolve_demo_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    fl_stats = {}
+    if online_personalizer is not None:
+        fl_stats = online_personalizer.get_stats(session_id)
+    return {**sess, "fl_stats": fl_stats}
+
+
+@app.post("/api/fl-update")
+async def trigger_fl_update(payload: dict):
+    """Chạy vài bước cập nhật personal head từ hành vi session (FedPer local)."""
+    if online_personalizer is None:
+        raise HTTPException(status_code=503, detail="Online personalizer not ready")
+
+    session_id = payload.get("session_id", "default")
+    result = online_personalizer.run_local_update(session_id)
+    return result
+
+
+@app.get("/api/products")
+async def get_products(
+    category: str = None,
+    page: int = 1,
+    limit: int = 20,
+    session_id: str = None,
+    client_id: int = None,
+):
+    """Get product catalog with optional category / federated client filter."""
+    if catalog_cache is None or not catalog_cache.is_loaded:
+        raise HTTPException(status_code=503, detail="Catalog embedding cache not initialized or not loaded")
+
+    sess = _resolve_demo_session(session_id) if session_id else None
+    cid = client_id
+    cat = category
+    if sess:
+        cid = sess.get("client_id", cid)
+        cat = cat or sess.get("category")
+
+    if cid is not None:
+        items = catalog_cache.get_products_for_client(cid, category=cat, limit=500)
+    else:
+        items = _format_catalog_products(list(catalog_cache.items_metadata.values()))
+        if cat:
+            items = [i for i in items if cat.lower() in i.get("category", "").lower()]
+
+    start = (page - 1) * limit
+    page_items = items[start : start + limit]
+    return {
+        "products": page_items,
+        "total": len(items),
+        "page": page,
+        "total_pages": max(1, (len(items) + limit - 1) // limit),
+        "client_id": cid,
+    }
+
+@app.get("/api/products/{product_id}")
+async def get_product(product_id: str):
+    """Get single product details."""
+    if catalog_cache is None or not catalog_cache.is_loaded:
+        raise HTTPException(status_code=503, detail="Catalog embedding cache not initialized or not loaded")
+        
+    meta = catalog_cache.items_metadata.get(product_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return meta
+
+@app.post("/api/track-behavior")
+async def track_behavior(data: dict):
+    """Track user behavior events; queue sample for on-device personal-head update."""
+    if behavior_tracker is None:
+        raise HTTPException(status_code=503, detail="Behavior tracker not initialized")
+
+    session_id = data.get("session_id", "default")
+    event_type = data.get("event_type") or data.get("action", "view")
+    item_id = data.get("item_id") or data.get("product_id")
+
+    behavior_tracker.record_event(session_id, event_type, item_id, data)
+
+    fl_result = {"updated": False}
+    sess = _resolve_demo_session(session_id)
+    client_id = sess.get("client_id") if sess else data.get("client_id")
+
+    if (
+        online_personalizer is not None
+        and catalog_cache is not None
+        and item_id
+        and item_id in catalog_cache.item_embeddings
+    ):
+        emb = catalog_cache.item_embeddings[item_id]
+        behavior_vec = behavior_tracker.get_behavior_vector(session_id)
+        cid = int(client_id) if client_id is not None else 0
+        online_personalizer.queue_interaction(
+            session_id,
+            cid,
+            str(item_id),
+            event_type,
+            text_emb=emb["text_emb"],
+            image_emb=emb["image_emb"],
+            behavior_vec=behavior_vec,
+        )
+        fl_result = online_personalizer.run_local_update(session_id, min_samples=2, steps=2)
+
+    return {"status": "ok", "fl_update": fl_result}
+
+@app.post("/api/track-behavior/batch")
+async def track_behavior_batch(data: dict):
+    """Track batch user behavior events."""
+    if behavior_tracker is None:
+        raise HTTPException(status_code=503, detail="Behavior tracker not initialized")
+        
+    session_id = data.get('session_id', 'default')
+    behavior = data.get('behavior', {})
+    
+    # Process clicks
+    clicks = behavior.get('clicks', {})
+    for item_id, count in clicks.items():
+        for _ in range(int(count)):
+            behavior_tracker.record_event(session_id, 'click', item_id)
+            
+    # Process views/durations
+    views = behavior.get('views', {})
+    for item_id, duration in views.items():
+        behavior_tracker.record_event(session_id, 'view', item_id, {"duration": duration})
+        
+    # Process cart additions
+    cart_adds = behavior.get('cart_adds', {})
+    for item_id, count in cart_adds.items():
+        for _ in range(int(count)):
+            behavior_tracker.record_event(session_id, 'cart', item_id)
+            
+    # Process search queries
+    search_queries = behavior.get('search_queries', [])
+    for q_item in search_queries:
+        query = q_item.get('query', '')
+        if query:
+            behavior_tracker.record_event(session_id, 'search', data={"query": query})
+            
+    return {"status": "ok"}
+
+@app.post("/api/recommend")
+async def get_recommendations_v2(data: dict):
+    """Get AI-powered recommendations using real model inference."""
+    if recommendation_engine is None:
+        raise HTTPException(status_code=503, detail="Recommendation engine not initialized")
+
+    session_id = data.get("session_id", "default")
+    context_item = (
+        data.get("context_item_id")
+        or data.get("product_context")
+        or data.get("context_item")
+    )
+    category = data.get("category")
+    top_k = data.get("top_k", 10)
+
+    sess = _resolve_demo_session(session_id)
+    client_id = sess.get("client_id") if sess else data.get("client_id")
+    if sess and not category:
+        category = sess.get("category")
+
+    inference_model = None
+    if online_personalizer is not None and client_id is not None:
+        inference_model = online_personalizer.get_model_for_inference(int(client_id))
+
+    result = recommendation_engine.get_recommendations(
+        session_id=session_id,
+        context_item_id=context_item,
+        category=category,
+        client_id=int(client_id) if client_id is not None else None,
+        top_k=top_k,
+        inference_model=inference_model,
+    )
+
+    recs = result.get("recommendations", [])
+    products = [
+        {
+            "id": r.get("item_id"),
+            "title": r.get("title"),
+            "category": r.get("category"),
+            "price": r.get("price"),
+            "rating": r.get("rating"),
+            "review_count": r.get("review_count", 0),
+            "image_url": r.get("image_url", ""),
+            "image_fallback": (
+                catalog_cache.items_metadata.get(r.get("item_id"), {}).get("image_fallback", "")
+                if catalog_cache
+                else ""
+            ),
+            "description": catalog_cache.items_metadata.get(r.get("item_id"), {}).get(
+                "description", ""
+            )
+            if catalog_cache
+            else "",
+        }
+        for r in recs
+    ]
+    result["recommendations"] = products
+    if online_personalizer is not None:
+        result["fl_stats"] = online_personalizer.get_stats(session_id)
+    return result
+
+@app.get("/api/categories")
+async def get_categories():
+    """Get available product categories."""
+    if catalog_cache is None or not catalog_cache.is_loaded:
+        raise HTTPException(status_code=503, detail="Catalog embedding cache not initialized or not loaded")
+        
+    categories = {}
+    for item in catalog_cache.items_metadata.values():
+        cat = item.get('category', 'Unknown')
+        categories[cat] = categories.get(cat, 0) + 1
+    return {"categories": [{"name": k, "count": v} for k, v in categories.items()]}
+
+@app.get("/api/search")
+async def search_products(q: str, limit: int = 20):
+    """Search products by query."""
+    if catalog_cache is None or not catalog_cache.is_loaded:
+        raise HTTPException(status_code=503, detail="Catalog embedding cache not initialized or not loaded")
+        
+    q_lower = q.lower()
+    results = [
+        item for item in catalog_cache.items_metadata.values()
+        if q_lower in item.get('title', '').lower() or q_lower in item.get('category', '').lower()
+    ]
+    formatted = _format_catalog_products(results[:limit])
+    return {"products": formatted, "results": formatted, "total": len(results)}
+
+
 _demo_dir = Path(__file__).resolve().parent.parent.parent / "demo"
 if _demo_dir.is_dir():
     app.mount("/demo", StaticFiles(directory=str(_demo_dir), html=True), name="demo_static")
+
+# Mount e-commerce frontend
+ecommerce_dir = Path(__file__).resolve().parent.parent.parent / "ecommerce"
+if ecommerce_dir.exists():
+    app.mount("/shop", StaticFiles(directory=str(ecommerce_dir), html=True), name="shop")
 
 
 def get_uvicorn_server_kwargs(*, reload: bool) -> Dict[str, Any]:
